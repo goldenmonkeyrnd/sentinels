@@ -16,7 +16,7 @@ async function initialize() {
     if (await sha256(bytes) !== manifest.wheel.sha256) throw new Error('Checker wheel checksum mismatch');
     pyodide.unpackArchive(new Uint8Array(bytes), 'zip');
     // Analyzer source discovery is not used here; all inputs come through the strict bundle boundary.
-    await pyodide.runPythonAsync('import sentinels\nfrom sentinels.models import ProjectBundle\nimport json');
+    await pyodide.runPythonAsync('import sentinels\nfrom sentinels.models import ProjectBundle\nfrom sentinels.cli import _error_report, _input_error_message\nfrom pydantic import ValidationError\nimport json');
 }
 self.onmessage = async (event: MessageEvent) => {
     const { id, kind, bundle } = event.data;
@@ -29,8 +29,12 @@ self.onmessage = async (event: MessageEvent) => {
             if (!pyodide) throw new Error('Checker has not initialized');
             pyodide.globals.set('_sentinels_input_json', JSON.stringify(bundle));
             try {
-                const result = await pyodide.runPythonAsync(`_sentinels_bundle = ProjectBundle.model_validate_json(_sentinels_input_json)
-_sentinels_result = sentinels.analyze_sources(_sentinels_bundle.files, _sentinels_bundle.config)
+                const result = await pyodide.runPythonAsync(`try:
+    _sentinels_bundle = ProjectBundle.model_validate_json(_sentinels_input_json)
+except (ValidationError, ValueError, TypeError) as _sentinels_error:
+    _sentinels_result = _error_report(_input_error_message(_sentinels_error))
+else:
+    _sentinels_result = sentinels.analyze_sources(_sentinels_bundle.files, _sentinels_bundle.config)
 _sentinels_result.model_dump_json()`);
                 self.postMessage({ id, kind: 'report', report: JSON.parse(String(result)) });
             } finally { pyodide.globals.delete('_sentinels_input_json'); }

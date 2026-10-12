@@ -3,7 +3,7 @@ interface Location { path: string; line: number; column?: number }
 interface Edge { source: string; target: string; kind: string; location?: Location; detail?: string }
 interface Finding { code: string; message: string; location?: Location | null }
 interface ContractResult { id: string; kind: string; status: string; findings: Finding[]; witness: Edge[]; unresolved: string[] }
-interface Report { status: string; scope: string[] | Record<string, unknown>; contracts: ContractResult[]; edges: Edge[]; assumptions: string[]; errors: unknown[]; checker_version?: string; parser_version?: string }
+interface Report { status: string; scope: string[]; contracts: ContractResult[]; edges: Edge[]; assumptions: string[]; errors: Finding[]; checker_version?: string; parser_version?: string }
 const get = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const source = get<HTMLTextAreaElement>('source-editor'), config = get<HTMLTextAreaElement>('contract-editor'), fileSelect = get<HTMLSelectElement>('file-select');
 const activate = get<HTMLButtonElement>('activate'), run = get<HTMLButtonElement>('run'), cancel = get<HTMLButtonElement>('cancel');
@@ -80,7 +80,7 @@ function initialize() {
         const message = event.data; if (message.id !== pending) return;
         clearTimeout(timeout); busy = false; cancel.disabled = true;
         if (message.kind === 'ready') { ready = true; run.disabled = false; activate.textContent = 'Checker ready'; runtimeStatus.textContent = 'Ready. The same released Python wheel runs locally in this worker. You can now analyze offline.'; runStatus.textContent = 'Choose a defect or edit the source, then run fresh analysis.'; }
-        else if (message.kind === 'report') { run.disabled = false; lastReport = message.report; renderReport(lastReport!); reportDownload.disabled = stale; runStatus.textContent = stale ? 'Analysis finished for an earlier input. Run again for your current edits.' : 'Fresh analysis finished.'; }
+        else if (message.kind === 'report') { run.disabled = false; lastReport = message.report; renderReport(lastReport!); reportDownload.disabled = stale; runStatus.textContent = stale ? 'Analysis finished for an earlier input. Run again for your current edits.' : `Fresh analysis finished: ${lastReport!.status}.`; }
         else if (message.kind === 'error') { if (!ready) stop(`Initialization failed: ${message.error}`); else { run.disabled = false; markStale(); runStatus.textContent = `ERROR: ${message.error}`; reportDownload.disabled = true; } }
     };
     worker.postMessage({ id: pending, kind: 'initialize' });
@@ -98,8 +98,8 @@ function jump(location: Location) {
 function sourceLink(location: Location, label?: string) { const button = node('button', label ?? `${location.path}:${location.line}`, 'finding-link'); button.addEventListener('click', () => jump(location)); return button; }
 function renderReport(report: Report) {
     reportContent.replaceChildren(); const verdict = node('p', stale ? `STALE · ${report.status}` : report.status, `verdict ${stale ? 'stale' : report.status.toLowerCase()}`); reportContent.append(verdict);
-    reportContent.append(node('p', `Checker ${report.checker_version ?? 'version in report'} · parser ${report.parser_version ?? 'version in report'}. Inspected scope: ${Array.isArray(report.scope) ? report.scope.join(', ') : JSON.stringify(report.scope)}.`));
-    for (const error of report.errors ?? []) reportContent.append(node('p', `ERROR: ${typeof error === 'string' ? error : JSON.stringify(error)}`));
+    reportContent.append(node('p', `Checker ${report.checker_version ?? 'version in report'} · parser ${report.parser_version ?? 'version in report'}. Inspected scope: ${report.scope.length ? report.scope.join(', ') : 'none'}.`));
+    for (const error of report.errors ?? []) { const message = node('p', `ERROR: ${error.message}`); if (error.location) message.append(' ', sourceLink(error.location)); reportContent.append(message); }
     for (const contract of report.contracts ?? []) {
         const section = node('article', undefined, 'contract'); section.append(node('h3', `${contract.id} · ${contract.kind}`), node('p', contract.status, `verdict ${contract.status.toLowerCase()}`));
         for (const finding of contract.findings ?? []) { const p = node('p', `${finding.code}: ${finding.message} `); if (finding.location) p.append(sourceLink(finding.location)); section.append(p); }
