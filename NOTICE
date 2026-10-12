@@ -1,0 +1,16 @@
+Sentinels
+Copyright (C) 2026 Pauline Yeary / Golden Monkey R&D
+
+Sentinels is distributed under the GNU Affero General Public License,
+version 3 only (SPDX: AGPL-3.0-only). See LICENSE for the full text.
+
+Design provenance: the Babylon Sentinel tooling and CivicAtlas pipeline
+checker by Pauline Yeary motivated these integration contract families.
+Their historical source and evidence remain in their original repositories:
+https://github.com/percy-raskova/babylon
+https://github.com/goldenmonkeyrnd/civicatlas
+
+The browser archive also redistributes Pyodide, CPython, Pydantic,
+pydantic-core, annotated-types, typing-extensions, and typing-inspection.
+Their upstream licenses and artifact inventory accompany the browser release.
+Those components retain their respective upstream licenses.

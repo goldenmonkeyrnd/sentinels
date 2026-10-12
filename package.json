@@ -1,0 +1,19 @@
+{
+  "name": "sentinels-browser-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "build": "uv build && uv run python scripts/export_browser_corpus.py && bun run build:lab",
+    "build:lab": "bun run check && python3 scripts/build_lab.py --wheel dist/goldenmonkey_sentinels-0.1.0-py3-none-any.whl",
+    "examples": "bun scripts/export_examples.ts",
+    "test:browser": "bun scripts/browser_test.mjs",
+    "test": "bun run test:browser",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "typescript": "5.9.3"
+  }
+}

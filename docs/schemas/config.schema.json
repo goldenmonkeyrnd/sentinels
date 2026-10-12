@@ -1,0 +1,273 @@
+{
+  "$defs": {
+    "ConnectionContract": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "minLength": 1,
+          "title": "Entry",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "connection",
+          "default": "connection",
+          "title": "Kind",
+          "type": "string"
+        },
+        "target": {
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "entry",
+        "target"
+      ],
+      "title": "ConnectionContract",
+      "type": "object"
+    },
+    "FieldSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "nullable": {
+          "default": false,
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "type": {
+          "default": "any",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "object",
+            "array",
+            "null",
+            "any"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "FieldSpec",
+      "type": "object"
+    },
+    "HandoffContract": {
+      "additionalProperties": false,
+      "properties": {
+        "argument": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argument"
+        },
+        "consumer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consumer"
+        },
+        "entry": {
+          "minLength": 1,
+          "title": "Entry",
+          "type": "string"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "handoff",
+          "default": "handoff",
+          "title": "Kind",
+          "type": "string"
+        },
+        "producer": {
+          "minLength": 1,
+          "title": "Producer",
+          "type": "string"
+        },
+        "returned_field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Returned Field"
+        }
+      },
+      "required": [
+        "id",
+        "entry",
+        "producer"
+      ],
+      "title": "HandoffContract",
+      "type": "object"
+    },
+    "ShapeContract": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_extra": {
+          "default": false,
+          "title": "Allow Extra",
+          "type": "boolean"
+        },
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FieldSpec"
+          },
+          "minProperties": 1,
+          "title": "Fields",
+          "type": "object"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "shape",
+          "default": "shape",
+          "title": "Kind",
+          "type": "string"
+        },
+        "mode": {
+          "default": "mapping",
+          "enum": [
+            "mapping",
+            "exports",
+            "artifact",
+            "model"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "fields"
+      ],
+      "title": "ShapeContract",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contracts": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "connection": "#/$defs/ConnectionContract",
+            "handoff": "#/$defs/HandoffContract",
+            "shape": "#/$defs/ShapeContract"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/ConnectionContract"
+          },
+          {
+            "$ref": "#/$defs/HandoffContract"
+          },
+          {
+            "$ref": "#/$defs/ShapeContract"
+          }
+        ]
+      },
+      "minItems": 1,
+      "title": "Contracts",
+      "type": "array"
+    },
+    "excludes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Excludes",
+      "type": "array"
+    },
+    "max_nodes": {
+      "default": 20000,
+      "maximum": 1000000,
+      "minimum": 1,
+      "title": "Max Nodes",
+      "type": "integer"
+    },
+    "max_steps": {
+      "default": 10000,
+      "maximum": 1000000,
+      "minimum": 1,
+      "title": "Max Steps",
+      "type": "integer"
+    },
+    "source_roots": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Source Roots",
+      "type": "array"
+    },
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "contracts"
+  ],
+  "title": "Config",
+  "type": "object"
+}

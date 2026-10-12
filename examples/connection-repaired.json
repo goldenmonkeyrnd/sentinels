@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "files": {
+    "pipeline.py": "import typer\n\napp = typer.Typer()\n\nclass Publisher:\n    def validate(self, county: str) -> None:\n        if not county:\n            raise ValueError(\"A county is required\")\n\n    def publish(self, county: str) -> dict:\n        self.validate(county)\n        return {\"county\": county, \"residents\": 1200}\n\n@app.command()\ndef publish() -> None:\n    publisher = Publisher()\n    publisher.publish(\"Example County\")\n\nif __name__ == \"__main__\":\n    app()\n"
+  },
+  "config": {
+    "version": 1,
+    "contracts": [
+      {
+        "kind": "connection",
+        "id": "validate-before-publication",
+        "entry": "pipeline:app",
+        "target": "pipeline:Publisher.validate"
+      }
+    ]
+  }
+}

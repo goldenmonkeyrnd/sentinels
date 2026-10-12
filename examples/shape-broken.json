@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "files": {
+    "pipeline.py": "from pydantic import BaseModel, ConfigDict\n\nclass Snapshot(BaseModel):\n    model_config = ConfigDict(strict=True, extra=\"forbid\")\n    county: str\n    residents: int\n\ndef publish() -> dict:\n    # Public consumers require residents; this key was renamed.\n    return {\"county\": \"Example County\", \"population\": 1200}\n"
+  },
+  "config": {
+    "version": 1,
+    "contracts": [
+      {
+        "kind": "shape",
+        "id": "public-snapshot-fields",
+        "source": "pipeline:publish",
+        "mode": "mapping",
+        "fields": {
+          "county": {
+            "type": "string",
+            "required": true,
+            "nullable": false
+          },
+          "residents": {
+            "type": "integer",
+            "required": true,
+            "nullable": false
+          }
+        },
+        "allow_extra": false
+      }
+    ]
+  }
+}
