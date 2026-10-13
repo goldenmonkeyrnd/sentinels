@@ -102,6 +102,8 @@ class State:
     delivered: set[tuple[str, str]] = field(default_factory=set)
     returned: Val | None = None
     control: str = ""
+    calls: dict[tuple[str, str, int, int], "State"] = field(default_factory=dict)
+    uncertain: bool = False
 
     def copy(self) -> "State":
         # Copy mapping storage once per branch while retaining alias identity
@@ -124,7 +126,16 @@ class State:
         return State({name: clone(value) for name, value in self.env.items()},
                      {key: clone(value) for key, value in self.attrs.items()},
                      self.produced.copy(), self.delivered.copy(),
-                     clone(self.returned) if self.returned is not None else None, self.control)
+                     clone(self.returned) if self.returned is not None else None, self.control,
+                     {key: choice.copy() for key, choice in self.calls.items()}, self.uncertain)
+
+
+class CallPaths(Exception):
+    """A supported helper returned multiple paths; continue each separately."""
+
+    def __init__(self, key: tuple[str, str, int, int], choices: list[State]):
+        self.key = key
+        self.choices = choices
 
 
 class SourceError(ValueError):
@@ -589,6 +600,7 @@ class Engine:
         if value.future:
             if "future:map" in value.refs and name in ("result", "wait"):
                 self.blocked.add("mapped futures form a collection, not a single future")
+                state.uncertain = True
                 return unknown("mapped futures form a collection, not a single future")
             if name == "result":
                 return Val(bound=(("future:result", value),))
@@ -665,6 +677,14 @@ class Engine:
         self.tick()
         if node is None:
             return literal(None)
+        expression_key = ("expression:" + self.current, self.current_module, getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+        if expression_key in state.calls:
+            choice = state.calls[expression_key].copy()
+            state.attrs.update(choice.attrs)
+            state.produced.update(choice.produced)
+            state.delivered.update(choice.delivered)
+            state.uncertain |= choice.uncertain
+            return choice.env["$return"]
         if isinstance(node, ast.Constant):
             return literal(node.value)
         if isinstance(node, ast.Name):
@@ -728,6 +748,7 @@ class Engine:
                     return result
                 if origins:
                     self.blocked.add("selected producer field is not statically identified")
+                    state.uncertain = True
                     return unknown("selected producer field is not statically identified")
             if isinstance(key.literal, int) and isinstance(value.literal, (list, tuple)) and -len(value.literal) <= key.literal < len(value.literal):
                 return literal(value.literal[key.literal])
@@ -743,6 +764,9 @@ class Engine:
                 return self.expr(node.body if condition.literal else node.orelse, state)
             branches = [state.copy(), state.copy()]
             values = [self.expr(node.body, branches[0]), self.expr(node.orelse, branches[1])]
+            ambiguous_dispatch = any(value.refs or value.bound or value.classes or value.apps for value in values)
+            if getattr(self.contract, "kind", None) == "handoff" and not ambiguous_dispatch:
+                raise CallPaths(expression_key, [State({"$return": value}, branch.attrs, branch.produced, branch.delivered, uncertain=branch.uncertain) for value, branch in zip(values, branches)])
             if branches[0].delivered != branches[1].delivered:
                 self.handoff_bad = True
             for branch in branches:
@@ -773,6 +797,7 @@ class Engine:
                 referenced = {child.id for child in ast.walk(node) if isinstance(child, ast.Name)} | {child.attr for child in ast.walk(node) if isinstance(child, ast.Attribute)}
                 if any(target and target.split(":")[-1].split(".")[-1] in referenced for target in targets):
                     self.blocked.add("comprehension iteration and binding are unresolved")
+                    state.uncertain = True
             return unknown("lazy generator expression" if isinstance(node, ast.GeneratorExp) else "unsupported comprehension")
         if isinstance(node, ast.NamedExpr):
             value = self.expr(node.value, state)
@@ -803,6 +828,7 @@ class Engine:
             reason = "ambiguous callable targets; candidate bodies are not proven"
             self.reasons.add(reason)
             self.blocked.add(reason)
+            state.uncertain = True
             for candidate in sorted(value.refs | frozenset(key for key, _ in value.bound)):
                 if candidate in self.p.functions:
                     self.edge(candidate, node, "candidate", reason)
@@ -815,6 +841,7 @@ class Engine:
             relevant_value = any(v.origins for v in args + list(kwargs.values()))
             if relevant_name or relevant_value or any("receiver" in reason or "dispatch" in reason for reason in value.unknown):
                 self.blocked.update(value.unknown)
+                state.uncertain = True
             # An interface/candidate is not enough evidence to follow its body.
             if (value.bound or value.refs or value.classes) and not (value.bound and all(key == "model:dump" for key, _ in value.bound)):
                 return replace(unknown("receiver or callable identity is not proven"), unknown=value.unknown | {"receiver or callable identity is not proven"})
@@ -903,6 +930,7 @@ class Engine:
                 elif name in ("getattr", "setattr"):
                     self.reasons.add("reflection affects reachable code")
                     self.blocked.add("reflection affects reachable code")
+                    state.uncertain = True
                     outputs.append(unknown("reflection affects reachable code"))
                 else:
                     outputs.append(literal(None))
@@ -986,10 +1014,19 @@ class Engine:
 
     def invoke(self, key: str, args: list[Val], kwargs: dict[str, Val], state: State, node: ast.AST, receiver: Val | None = None, kind: str = "call", bypass: bool = False) -> Val:
         self.tick()
+        call_key = (key, self.current_module, getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+        if call_key in state.calls:
+            choice = state.calls[call_key].copy()
+            state.attrs.update(choice.attrs)
+            state.produced.update(choice.produced)
+            state.delivered.update(choice.delivered)
+            state.uncertain |= choice.uncertain
+            return choice.env["$return"]
         fn = self.p.functions[key]
         if fn.opaque and not bypass:
             self.reasons.add(f"opaque decorator on {key}")
             self.blocked.add(f"opaque decorator on {key}")
+            state.uncertain = True
             return unknown(f"opaque decorator on {key}")
         # A generator call creates an iterator; it does not enter the body.
         def generator_body(nodes: list[ast.stmt]) -> bool:
@@ -1004,6 +1041,7 @@ class Engine:
         if generator_body(fn.node.body):
             self.reasons.add(f"generator body requires iteration: {key}")
             self.blocked.add(f"generator body requires iteration: {key}")
+            state.uncertain = True
             return unknown(f"unconsumed generator {key}")
         self.edge(key, node, kind, "Prefect adapter structural invocation" if fn.prefect and not bypass else "explicit decorator bypass" if bypass else "")
         self.visited.add(key)
@@ -1031,38 +1069,46 @@ class Engine:
         previous = self.current, self.current_module
         self.current, self.current_module = key, fn.module
         self.stack.append(key)
-        inner = State(env, state.attrs.copy(), state.produced.copy(), state.delivered.copy())
+        inner = State(env, state.attrs.copy(), state.produced.copy(), state.delivered.copy(), uncertain=state.uncertain)
         endings = self.block(fn.node.body, [inner])
         self.stack.pop()
         self.current, self.current_module = previous
         if not endings:
             endings = [inner]
         values = [ending.returned if ending.returned is not None else literal(None) for ending in endings]
-        # Keep branch-specific mapping alternatives, never union field keys.
-        output = merge(values)
-        for ending in endings:
-            state.produced.update(ending.produced)
-            state.delivered.update(ending.delivered)
-        for attr in set().union(*(ending.attrs.keys() for ending in endings)):
-            state.attrs[attr] = merge([ending.attrs.get(attr, unknown("branch-dependent receiver field")) for ending in endings])
-        if len(endings) > 1 and getattr(contract, "kind", None) == "handoff":
-            delivered_sets = [ending.delivered for ending in endings]
-            if any(s != delivered_sets[0] for s in delivered_sets[1:]):
-                self.handoff_bad = True
         if key == getattr(contract, "producer", None):
             identity = key + f"@{self.loc(node, previous[1]).path}:{getattr(node, 'lineno', 1)}:{getattr(node, 'col_offset', 0)}"
-            state.produced.add((identity, ""))
             def tag_fields(value: Val, prefix: str) -> Val:
                 for mapping in value.maps:
                     for field_name, field_value in list(mapping.items()):
                         selected = field_name if not prefix else prefix + "." + field_name
                         mapping[field_name] = tag_fields(field_value, selected)
                 return replace(value, origins=value.origins | {(identity, prefix)})
-            output = tag_fields(output, "")
-            for instance in output.identities:
-                for (owner, name), field_value in list(state.attrs.items()):
-                    if owner == instance:
-                        state.attrs[(owner, name)] = tag_fields(field_value, name)
+            values = [tag_fields(value, "") for value in values]
+            for value, ending in zip(values, endings):
+                ending.produced.add((identity, ""))
+                for instance in value.identities:
+                    for (owner, name), field_value in list(ending.attrs.items()):
+                        if owner == instance:
+                            ending.attrs[(owner, name)] = tag_fields(field_value, name)
+        if len(endings) > 1 and getattr(contract, "kind", None) == "handoff" and self.stack:
+            if fn.node.name == "__init__":
+                # Constructor receivers cannot be replayed without preserving
+                # their allocation identity. Retain uncertainty rather than a
+                # branch-mixed delivery proof.
+                self.blocked.add("branch-dependent constructor effects")
+                self.reasons.add("branch-dependent constructor effects")
+                state.uncertain = True
+            else:
+                raise CallPaths(call_key, [State({"$return": value}, ending.attrs, ending.produced, ending.delivered, uncertain=ending.uncertain) for value, ending in zip(values, endings)])
+        # Keep branch-specific mapping alternatives, never union field keys.
+        output = merge(values)
+        for ending in endings:
+            state.produced.update(ending.produced)
+            state.delivered.update(ending.delivered)
+            state.uncertain |= ending.uncertain
+        for attr in set().union(*(ending.attrs.keys() for ending in endings)):
+            state.attrs[attr] = merge([ending.attrs.get(attr, unknown("branch-dependent receiver field")) for ending in endings])
         if len(self.stack) == 0:
             self.path_states = endings
         return output
@@ -1078,6 +1124,7 @@ class Engine:
             else:
                 self.reasons.add("monkeypatching or unresolved attribute assignment")
                 self.blocked.add("monkeypatching or unresolved attribute assignment")
+                state.uncertain = True
         elif isinstance(target, (ast.Tuple, ast.List)):
             for i, item in enumerate(target.elts):
                 values = [mapping.get(str(i), unknown("unknown unpacking element")) for mapping in value.maps]
@@ -1102,7 +1149,26 @@ class Engine:
                 if state.returned is not None or state.control:
                     next_states.append(state)
                     continue
-                next_states.extend(self.statement(node, state))
+                if getattr(self.contract, "kind", None) != "handoff":
+                    next_states.extend(self.statement(node, state))
+                    continue
+                pending = [state]
+                while pending:
+                    before = pending.pop()
+                    candidate = before.copy()
+                    try:
+                        results = self.statement(node, candidate)
+                    except CallPaths as split:
+                        for choice in split.choices:
+                            alternative = before.copy()
+                            alternative.calls[split.key] = choice
+                            pending.append(alternative)
+                    else:
+                        for result in results:
+                            result.calls.clear()
+                        next_states.extend(results)
+                    if len(pending) + len(next_states) > 128:
+                        raise LimitError("branch state limit 128 exceeded")
             states = next_states
             if len(states) > 128:
                 raise LimitError("branch state limit 128 exceeded")
@@ -1200,6 +1266,7 @@ class Engine:
         else:
             self.reasons.add(f"unsupported statement {type(node).__name__}")
             self.blocked.add(f"unsupported statement {type(node).__name__}")
+            state.uncertain = True
         return [state]
 
     def run_app(self, app: str, state: State, node: ast.AST, seen: set[str] | None = None) -> None:
@@ -1413,7 +1480,16 @@ def analyze_sources(files: dict[str, str], config: Config | dict[str, Any]) -> A
                 else:
                     tokens = {token for token, _ in state.produced if token.startswith(contract.producer + "@")}
                     delivered = {token for token, field in state.delivered if contract.field is None or field == contract.field}
-                    proven = bool(tokens) and tokens <= delivered and not engine.handoff_bad
+                    paths = engine.path_states or [state]
+                    complete_paths = []
+                    for path in paths:
+                        produced_on_path = {token for token, _ in path.produced if token.startswith(contract.producer + "@")}
+                        delivered_on_path = {token for token, field in path.delivered if contract.field is None or field == contract.field}
+                        complete = bool(produced_on_path) and produced_on_path <= delivered_on_path
+                        complete_paths.append(complete)
+                        if not complete and not path.uncertain:
+                            engine.handoff_bad = True
+                    proven = all(complete_paths) and bool(tokens) and tokens <= delivered and not engine.handoff_bad
                     if proven:
                         status = "PASS"
                         destination = contract.consumer or contract.entry

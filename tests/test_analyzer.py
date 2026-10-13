@@ -140,6 +140,36 @@ class HandoffTests(unittest.TestCase):
         source = self.prefix + 'def main(flag):\n    x = produce()\n    if flag:\n        consume(x)\n    else:\n        pass'
         self.assertEqual(check(source, handoff()).status, 'FAIL')
 
+    def test_mutually_exclusive_producers_each_reach_consumer(self):
+        source = self.prefix + 'def main(flag):\n    if flag:\n        x = produce()\n        consume(x)\n    else:\n        x = produce()\n        consume(x)'
+        report = check(source, handoff())
+        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(len([edge for edge in report.contracts[0].witness if edge.kind == 'handoff']), 2)
+
+    def test_helper_returns_preserve_branch_producer_correlation(self):
+        for returned in ('x', 'x["value"]'):
+            source = self.prefix + f'def wrapper(flag):\n    if flag:\n        x = produce()\n        return {returned}\n    x = produce()\n    return {returned}\ndef main(flag): consume(wrapper(flag))'
+            with self.subTest(returned=returned):
+                self.assertEqual(check(source, handoff(**({'field': 'value'} if returned != 'x' else {}))).status, 'PASS')
+        source = self.prefix + 'def wrapper(flag): return produce() if flag else produce()\ndef main(flag): consume(wrapper(flag))'
+        self.assertEqual(check(source, handoff()).status, 'PASS')
+
+    def test_opaque_branch_keeps_missing_delivery_unresolved(self):
+        source = self.prefix + '@opaque\ndef hidden(payload): pass\ndef main(flag):\n    x = produce()\n    if flag: consume(x)\n    else: hidden(x)'
+        self.assertEqual(check(source, handoff()).status, 'UNRESOLVED')
+        # A separate supported path still supplies a definite counterexample.
+        source = source.replace('else: hidden(x)', 'elif unknown: hidden(x)\n    else: pass')
+        self.assertEqual(check(source, handoff()).status, 'FAIL')
+
+    def test_helper_branch_cannot_deliver_another_branchs_discarded_value(self):
+        source = self.prefix + 'def wrapper(flag):\n    x = produce()\n    if flag: return x\n    return {"value": 7}\ndef main(flag): consume(wrapper(flag))'
+        self.assertEqual(check(source, handoff()).status, 'FAIL')
+
+    def test_returned_payload_preserves_branch_producer_correlation(self):
+        contract = handoff(); contract.pop('consumer'); contract.pop('argument'); contract['returned_field'] = 'published'
+        source = self.prefix + 'def wrapper(flag):\n    if flag: return produce()\n    return produce()\ndef main(flag): return {"published": wrapper(flag)}'
+        self.assertEqual(check(source, contract).status, 'PASS')
+
     def test_wrapper_branch_cannot_claim_both_return_values_come_from_producer(self):
         source = self.prefix + 'def wrapper(flag):\n    if flag: return produce()\n    return {}\ndef main(flag): consume(wrapper(flag))'
         self.assertEqual(check(source, handoff()).status, 'FAIL')
