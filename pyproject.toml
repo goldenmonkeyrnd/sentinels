@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "goldenmonkey-sentinels"
-version = "0.1.0"
+version = "0.1.1"
 description = "Source-only, inspectable integration checks for Python applications"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -30,7 +30,7 @@ dependencies = [
 sentinels = "sentinels.cli:main"
 
 [project.urls]
-Homepage = "https://goldenmonkey.dev/work/agentic-engineering/"
+Homepage = "https://goldenmonkey.dev/labs/sentinels/"
 Repository = "https://github.com/goldenmonkeyrnd/sentinels"
 Issues = "https://github.com/goldenmonkeyrnd/sentinels/issues"
 

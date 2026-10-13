@@ -11,7 +11,7 @@ tests and observations. Sentinels never imports the analyzed application,
 executes its decorators, evaluates its annotations, or instantiates its models.
 
 This is the source of the reusable tool and editable browser lab displayed at
-[Golden Monkey R&D](https://goldenmonkey.dev/work/agentic-engineering/).
+[Golden Monkey R&D](https://goldenmonkey.dev/labs/sentinels/).
 The repository is licensed **AGPL-3.0-only**; dependencies retain their own
 licenses. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 

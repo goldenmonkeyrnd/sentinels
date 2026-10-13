@@ -18,7 +18,7 @@ await new Promise((resolve, reject) => { server.once('error', reject); server.li
 const base = `http://127.0.0.1:${server.address().port}/`;
 let browser;
 function semantic(report) { return { status: report.status, scope: report.scope, contracts: report.contracts, edges: report.edges, assumptions: report.assumptions, errors: report.errors, source_hash: report.source_hash, config_hash: report.config_hash }; }
-function native(bundlePath) { const command = spawnSync(resolve(root, '.venv/bin/python'), ['-m', 'sentinels', 'check', '--bundle', bundlePath, '--json'], { cwd: root, encoding: 'utf8' }); if (![0, 1, 2, 3].includes(command.status)) throw new Error(command.stderr || command.stdout); return JSON.parse(command.stdout); }
+function native(bundlePath) { const wheel = resolve(directory, releaseManifest.wheel.file); const bridge = 'import sys; sys.path.insert(0,sys.argv.pop(1)); from sentinels.cli import main; raise SystemExit(main())'; const command = spawnSync(resolve(root, '.venv/bin/python'), ['-c', bridge, wheel, 'check', '--bundle', bundlePath, '--json'], { cwd: root, encoding: 'utf8' }); if (![0, 1, 2, 3].includes(command.status)) throw new Error(command.stderr || command.stdout); return JSON.parse(command.stdout); }
 async function assertProvenance(workspace, expected = releaseManifest) {
     await workspace.locator('#activate:not([disabled])').waitFor();
     assert.deepEqual(await workspace.locator('[data-release-version]').allTextContents(), [expected.release.tag, expected.release.tag]);

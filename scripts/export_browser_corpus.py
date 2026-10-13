@@ -7,9 +7,14 @@ from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
+import argparse
+from release_artifacts import release_wheel
 
 ROOT = Path(__file__).resolve().parent.parent
-wheel = ROOT / 'dist/goldenmonkey_sentinels-0.1.0-py3-none-any.whl'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--wheel', type=Path)
+args = parser.parse_args()
+wheel = release_wheel(args.wheel)
 if not wheel.is_file():
     raise SystemExit('Build the release wheel before exporting its browser parity corpus')
 sys.path.insert(0, str(wheel))
@@ -26,7 +31,7 @@ def capture(files, config):
     # Browser inputs use the strict bundle boundary. Invalid configurations are tested
     # separately, and native filesystem-only operations cannot be browser projects.
     raw = config.model_dump(mode='json') if hasattr(config, 'model_dump') else config
-    payload = {'version': 1, 'files': dict(files), 'config': raw}
+    payload = {'version': Bundle.model_fields['version'].default, 'files': dict(files), 'config': raw}
     try:
         bundle = Bundle.model_validate_json(json.dumps(payload))
     except Exception:
@@ -42,8 +47,14 @@ def capture(files, config):
 with patch.object(analyzer, 'analyze_sources', capture):
     suite = unittest.defaultTestLoader.discover(str(ROOT / 'tests'))
     result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1).run(suite)
-if not result.wasSuccessful():
+if not result.wasSuccessful() or result.skipped:
     raise SystemExit('Native tests must pass before exporting browser parity fixtures')
+# Tests deliberately mutate checker dispatch as well as application inputs.
+# Recompute with the restored released checker, so no injected checker defect
+# becomes an alleged native/browser semantic expectation.
+for case in cases.values():
+    payload = case['bundle']
+    case['report'] = original(payload['files'], payload['config']).model_dump(mode='json')
 output = ROOT / 'dist/browser-corpus.json'
 output.parent.mkdir(exist_ok=True)
 output.write_text(json.dumps({'version': 1, 'wheel_sha256': hashlib.sha256(wheel.read_bytes()).hexdigest(), 'native_tests': result.testsRun, 'cases': [cases[key] for key in sorted(cases)]}, indent=2) + '\n')

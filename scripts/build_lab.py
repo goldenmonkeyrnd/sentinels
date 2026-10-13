@@ -13,17 +13,18 @@ import subprocess
 import tarfile
 import urllib.request
 import zipfile
+from release_artifacts import VERSION, release_wheel
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = '0.1.0'
 MAX_ASSET = 25 * 1024 * 1024
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 def build(wheel: Path, output: Path, cache: Path) -> Path:
-    if not wheel.is_file() or wheel.suffix != '.whl':
-        raise ValueError('Supply the qualified Sentinels wheel with --wheel.')
+    wheel = release_wheel(wheel)
+    source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    source_dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip())
     pins = json.loads((ROOT / 'lab/runtime-pins.json').read_text())
     if pins['version'] != '314.0.7':
         raise ValueError('Unexpected runtime version')
@@ -62,10 +63,13 @@ def build(wheel: Path, output: Path, cache: Path) -> Path:
         if len(metadata) != 1 or f'Version: {VERSION}\n' not in archive.read(metadata[0]).decode():
             raise ValueError('Wheel metadata must match the lab version')
     (output / wheel.name).write_bytes(wheel_bytes)
-    (output / 'manifest.json').write_text(json.dumps({'version': VERSION, 'runtime': pins['version'], 'wheel': {'file': wheel.name, 'sha256': digest(wheel_bytes)}, 'limits': {'files': 20, 'file_bytes': 16384, 'total_bytes': 102400, 'initialization_ms': 30000, 'analysis_ms': 5000}}, indent=2) + '\n')
+    schema_version = json.loads((ROOT / 'examples/connection-repaired.json').read_text())['version']
+    tag = f'v{VERSION}'
+    release_url = f'https://github.com/goldenmonkeyrnd/sentinels/releases/tag/{tag}'
+    (output / 'manifest.json').write_text(json.dumps({'version': VERSION, 'runtime': pins['version'], 'wheel': {'file': wheel.name, 'sha256': digest(wheel_bytes)}, 'release': {'tag': tag, 'url': release_url, 'source_url': f'https://github.com/goldenmonkeyrnd/sentinels/tree/{source_commit}', 'source_archive_url': f'https://github.com/goldenmonkeyrnd/sentinels/releases/download/{tag}/sentinels-source-{tag}.tar.gz'}, 'source_commit': source_commit, 'source_dirty': source_dirty, 'schema_version': schema_version, 'limits': {'files': 20, 'file_bytes': 16384, 'total_bytes': 102400, 'initialization_ms': 30000, 'analysis_ms': 5000}}, indent=2) + '\n')
     shutil.copyfile(ROOT / 'LICENSE', output / 'LICENSE')
     shutil.copyfile(ROOT / 'NOTICE', output / 'NOTICE')
-    notices = ['Sentinels is AGPL-3.0-only. Corresponding source: https://github.com/goldenmonkeyrnd/sentinels/releases/tag/v0.1.0', '', 'Pyodide 314.0.7: Mozilla Public License 2.0; CPython 3.14.2: Python Software Foundation License.', 'Pyodide corresponding source: https://github.com/pyodide/pyodide/tree/314.0.7', 'CPython source: https://github.com/python/cpython/tree/v3.14.2', 'Runtime provenance and hashes: runtime-pins.json. See licenses/ for exact texts and dependency notices.', 'Pydantic 2.12.5, pydantic-core 2.41.5, typing-extensions 4.15.0, annotated-types 0.7.0, typing-inspection 0.4.2 are distributed under their respective licenses below.', '']
+    notices = [f'Sentinels is AGPL-3.0-only. Corresponding source: {release_url}', '', 'Pyodide 314.0.7: Mozilla Public License 2.0; CPython 3.14.2: Python Software Foundation License.', 'Pyodide corresponding source: https://github.com/pyodide/pyodide/tree/314.0.7', 'CPython source: https://github.com/python/cpython/tree/v3.14.2', 'Runtime provenance and hashes: runtime-pins.json. See licenses/ for exact texts and dependency notices.', 'Pydantic 2.12.5, pydantic-core 2.41.5, typing-extensions 4.15.0, annotated-types 0.7.0, typing-inspection 0.4.2 are distributed under their respective licenses below.', '']
     licenses = output / 'licenses'
     licenses.mkdir(exist_ok=True)
     license_names = set()
@@ -96,7 +100,7 @@ def build(wheel: Path, output: Path, cache: Path) -> Path:
     if not native_python.is_file():
         raise ValueError('Run uv sync --locked before building the lab.')
     bridge = 'import json,sys; sys.path.insert(0,sys.argv[1]); from sentinels import analyze_sources; payload=json.loads(sys.stdin.read()); print(analyze_sources(payload["files"],payload["config"]).model_dump_json())'
-    fixed_bundle = {'files': {'fixed_counterexample.py': fixed}, 'config': {'version': 1, 'contracts': [{'kind': 'connection', 'id': 'fixed-runtime-boundary', 'entry': 'fixed_counterexample:main', 'target': 'fixed_counterexample:validate'}]}}
+    fixed_bundle = {'files': {'fixed_counterexample.py': fixed}, 'config': {'version': schema_version, 'contracts': [{'kind': 'connection', 'id': 'fixed-runtime-boundary', 'entry': 'fixed_counterexample:main', 'target': 'fixed_counterexample:validate'}]}}
     checked = subprocess.run([str(native_python), '-c', bridge, str(wheel)], input=json.dumps(fixed_bundle), text=True, capture_output=True, check=True)
     structural_report = json.loads(checked.stdout)
     if structural_report['status'] != 'PASS':
@@ -135,11 +139,11 @@ def build(wheel: Path, output: Path, cache: Path) -> Path:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--wheel', required=True, type=Path)
+    parser.add_argument('--wheel', type=Path)
     parser.add_argument('--output', type=Path, default=ROOT / 'dist/lab')
     parser.add_argument('--cache', type=Path, default=Path('/tmp/sentinels-runtime-cache'))
     args = parser.parse_args()
-    build(args.wheel.resolve(), args.output.resolve(), args.cache.resolve())
+    build(release_wheel(args.wheel), args.output.resolve(), args.cache.resolve())
 
 if __name__ == '__main__':
     main()

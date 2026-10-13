@@ -10,7 +10,7 @@ from .models import AnalysisReport, Bundle, Config
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["AnalysisReport", "Bundle", "Config", "analyze_sources", "analyze_project"]
 
 

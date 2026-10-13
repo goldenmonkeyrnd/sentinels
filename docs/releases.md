@@ -1,44 +1,27 @@
-# Release v0.1.0
+# Publishing and promoting releases
 
-The release source of truth is `goldenmonkeyrnd/sentinels`. CivicAtlas and the
-portfolio consume an exact qualified release; they do not keep separate analyzer
-implementations. PyPI publication is outside this release.
+`goldenmonkeyrnd/sentinels` owns the analyzer and lab. CivicAtlas and the portfolio consume exact qualified artifacts. PyPI publication remains outside this increment.
 
-## Qualify the artifacts
+## Publish a release
 
-Run the native tests on Python 3.12, 3.13, and 3.14, including meaningful fault
-injection and import-side-effect fixtures. Exercise the Prefect 3.6.11 and Typer
-0.20.0 adapter fixtures natively without external services. Build the wheel and
-source distribution, export schemas, and build the lab using its pinned runtime.
+Update `pyproject.toml`, `src/sentinels/__init__.py`, and `package.json` together, refresh `uv.lock`, regenerate schemas and examples when contracts change, and commit the source. Push a stable `vMAJOR.MINOR.PATCH` tag for that source revision. `.github/workflows/release.yml` builds the wheel and source distribution once. Three qualification jobs import that same wheel on Python 3.12–3.14, run all tests with pinned native adapters and zero skips, and exercise the actual CLI against broken and repaired examples. The browser job uses the same wheel and the bounded native fixture corpus in actual Pyodide.
 
-Run the same fixture bundles in actual browser Pyodide. Compare semantic findings
-and witnesses after normalizing interpreter provenance. Check stale result
-handling, watchdog termination/recovery, keyboard and mobile access, input bounds,
-offline analysis after loading, and absence of source/report uploads. Check that
-there are no runtime downloads before activation and that each static asset fits
-the deployment platform's size limits.
+Qualification checks semantic findings and witnesses, stale results, cancellation/recovery, keyboard/mobile use, input limits, offline analysis, source privacy, and zero runtime loading before activation. Unsupported analysis remains explicit. The fixed executed counterexample remains separate from analysis of edited source.
 
-Release assets must include the Python wheel, source distribution, browser
-archive, corresponding source archive, dependency notices, artifact inventory,
-and SHA-256 checksums. Verify the checksums against the finished assets before
-creating the tag and public GitHub release. Preserve attribution and the full
-AGPL license in the source and distributions. The browser must provide its exact
-source/release links and license notices.
+The publisher binds the source SHA, successful qualification job identities, wheel/archive digests, notices, and byte sizes in `release-qualification.json`. It aggregates interpreter results in `native-qualification.json`, preserves `browser-qualification.json`, and publishes the wheel, source distribution, browser archive, corresponding Git source, inventory, full AGPL license, attribution, third-party notices, and `SHA256SUMS`. It publishes through a draft; repository release immutability locks the finished assets. Qualification failure prevents publication. A retry verifies an existing release rather than replacing its assets.
 
-## Adopt and deploy
+## Promote the website
 
-After publication, CivicAtlas pins the GitHub wheel URL and hash in its committed
-dependency lock and uses `uv sync --locked`. Verify its real validator connection,
-manifest handoff, and snapshot shape, while retaining runtime data validation and
-reproducibility gates. Retire the duplicated checker and generic fixtures after
-the released checker satisfies the real integration checks.
+The publisher uses the **GoldenMonkey Sentinels Release** GitHub App to dispatch `promote-sentinels.yml` in `goldenmonkeyrnd/golden-monkey-rnd`. The App is installed only on that repository, with Actions write and required Metadata read access. Its ID is the Sentinels Actions variable `SENTINELS_PROMOTION_APP_ID`; its private key is the encrypted secret `SENTINELS_PROMOTION_APP_PRIVATE_KEY`.
 
-The portfolio pins the lab archive's URL and checksum. Its importer rejects
-absolute/traversal paths, links, and unexpected archive content and stages assets
-locally at `/labs/sentinels/v0.1.0/`. Verify the produced lab headers and lazy
-activation before deploying. Keep historical recordings and their original
-provenance; retire their old generator when the live lab lands.
+The website verifies the source tag, qualification jobs, record and asset digests, native/browser wheel identity, clean source provenance, and safe archive inventory. It qualifies a candidate before committing its selected release pin and catalog, then deploys the exact checked site artifact. The App does not have repository Contents or Secrets permissions. Website commits use the website workflow's own token.
 
-Production acceptance requires a visitor to edit an example, obtain a fresh
-source-linked result, repair it, and download its bundle/report from the deployed
-site. A screenshot or recording alone does not complete that acceptance.
+The public address stays **https://goldenmonkey.dev/labs/sentinels/**. Hugo supplies shared navigation, breadcrumbs, and footer. Workspaces live under immutable archive-digest paths; the release catalog retains deployed bundles so open sessions keep their original assets. The old versioned landing address redirects while subordinate asset routes remain available. Article embeds load the workspace directly.
+
+A rollback selects a retained digest and records the rejected release so automatic promotion cannot immediately restore it. Never replace assets beneath an existing digest. Apply worker/Wasm policy only to workspace routes. Keep Python loading behind **Try the lab**, with no lab telemetry or automatic edit persistence.
+
+## Adopt and accept
+
+CivicAtlas commits a hashed released-wheel URL and dependency lock, uses `uv sync --locked`, and retains its runtime data validation and reproducibility gates. Coverage adoption reviews every selected production declaration rather than automatically accepting a regenerated ledger.
+
+Production acceptance requires actual visitor-generated findings, repair, downloads, navigation, offline analysis after initialization, and worker recovery. Historical recordings remain evidence with their original provenance; screenshots alone do not qualify the analyzer or deployment.

@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from .models import (AnalysisReport, Config, ContractResult, Finding, GraphEdge,
                      SourceLocation)
 
-VERSION = "0.1.0"
+from . import __version__ as VERSION
 _MISSING = object()
 
 
