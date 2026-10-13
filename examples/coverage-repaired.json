@@ -1,0 +1,97 @@
+{
+  "version": 2,
+  "files": {
+    "pipeline.py": "from pydantic import BaseModel\n\nclass Snapshot(BaseModel):\n    county: str\n    residents: int\n\ndef validate_snapshot(snapshot: dict) -> None:\n    if not snapshot[\"county\"]:\n        raise ValueError(\"A county is required\")\n\ndef publish() -> dict:\n    return {\"county\": \"Example County\", \"residents\": 1200}\n\ndef main() -> dict:\n    snapshot = publish()\n    validate_snapshot(snapshot)\n    return snapshot\n\n# This new helper is private, but it still belongs in the coverage inventory.\ndef _county_label() -> str:\n    return \"Example County\"\n"
+  },
+  "config": {
+    "version": 2,
+    "contracts": [
+      {
+        "kind": "connection",
+        "id": "validator-connected",
+        "entry": "pipeline:main",
+        "target": "pipeline:validate_snapshot"
+      },
+      {
+        "kind": "shape",
+        "id": "published-fields",
+        "source": "pipeline:publish",
+        "mode": "mapping",
+        "fields": {
+          "county": {
+            "type": "string",
+            "required": true,
+            "nullable": false
+          },
+          "residents": {
+            "type": "integer",
+            "required": true,
+            "nullable": false
+          }
+        },
+        "allow_extra": false
+      },
+      {
+        "kind": "shape",
+        "id": "model-fields",
+        "source": "pipeline:Snapshot",
+        "mode": "model",
+        "fields": {
+          "county": {
+            "type": "string",
+            "required": true,
+            "nullable": false
+          },
+          "residents": {
+            "type": "integer",
+            "required": true,
+            "nullable": false
+          }
+        },
+        "allow_extra": false
+      },
+      {
+        "kind": "coverage",
+        "id": "publication-coverage",
+        "roots": [
+          "."
+        ],
+        "ledger": [
+          {
+            "kind": "contract",
+            "surface": "pipeline:main",
+            "contracts": [
+              "validator-connected"
+            ]
+          },
+          {
+            "kind": "contract",
+            "surface": "pipeline:validate_snapshot",
+            "contracts": [
+              "validator-connected"
+            ]
+          },
+          {
+            "kind": "contract",
+            "surface": "pipeline:publish",
+            "contracts": [
+              "published-fields"
+            ]
+          },
+          {
+            "kind": "contract",
+            "surface": "pipeline:Snapshot",
+            "contracts": [
+              "model-fields"
+            ]
+          },
+          {
+            "kind": "internal",
+            "surface": "pipeline:_county_label",
+            "reason": "An internal example label; it neither validates nor publishes the public snapshot."
+          }
+        ]
+      }
+    ]
+  }
+}

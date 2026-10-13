@@ -1,10 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "files": {
     "pipeline.py": "from prefect import flow, task\n\n@task\ndef calculate() -> int:\n    return 1200\n\n@task\ndef publish(residents: int) -> dict:\n    return {\"county\": \"Example County\", \"residents\": residents}\n\n@flow\ndef main() -> dict:\n    calculated = calculate.submit()\n    published = publish.submit(residents=calculated)\n    return published.result()\n"
   },
   "config": {
-    "version": 1,
+    "version": 2,
     "contracts": [
       {
         "kind": "handoff",

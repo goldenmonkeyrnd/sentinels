@@ -1,6 +1,6 @@
 # Running and qualifying the browser lab
 
-The lab runs the exact release wheel in a module Web Worker. It uses Python AST and symbol-table analysis, not a second JavaScript checker. Submitted source is JSON data passed to `analyze_sources`; it is never supplied to `runPythonAsync`, imported as an application, or executed. The trusted bridge validates a version 1 bundle with the same Pydantic model as the CLI.
+The lab runs the exact release wheel in a module Web Worker. It uses Python AST and symbol-table analysis, not a second JavaScript checker. Submitted source is JSON data passed to `analyze_sources`; it is never supplied to `runPythonAsync`, imported as an application, or executed. The trusted bridge validates a version 2 bundle with the same Pydantic model as the CLI.
 
 Use Python 3.12–3.14, uv, and Bun 1.3.4:
 
@@ -23,7 +23,7 @@ uv run sentinels check --bundle sentinels-project.json --json
 
 The built directory `dist/lab/` contains `index.html`, app and worker scripts, the Python wheel, minimal Pyodide runtime, dependency wheels, license texts, a fixed counterexample record, and checksums. The USTAR archive `dist/sentinels-lab-vVERSION.tar.gz` has regular files only and `index.html` at its root. `assets-manifest.json` maps every other file to its SHA-256 and byte size. Every file is below Cloudflare's 25 MiB asset limit. Archive metadata is deterministic; the fixed execution record reports the build interpreter version.
 
-`bun run test:browser` starts its own temporary local HTTP server with the lab's CSP and launches real Chromium. It checks lazy runtime loading, all six broken/repaired examples and the full bounded native fixture corpus against native semantic reports, source privacy, offline analysis after initialization, stale results, limits, keyboard navigation, mobile layout, and timeout/cancellation recovery. Only the controlled stalled-worker tests substitute the worker to exercise the watchdog; all analyzer findings use real Pyodide and the wheel. It writes `dist/browser-qualification.json`, containing the exact wheel hash and browser version. Set `SENTINELS_LAB_URL` to the permanent Hugo page and `SENTINELS_PREVIOUS_LAB_URL` to a retained older workspace to verify session isolation. Set `SENTINELS_PORTFOLIO_URL` to a local Workers preview or deployed article URL to also verify embedding, GPC/DNT independence, scoped headers, and a fresh visitor result. `CHROMIUM_EXECUTABLE` can select an already-installed Chromium binary; otherwise install the version pinned by Playwright.
+`bun run test:browser` starts its own temporary local HTTP server with the lab's CSP and launches real Chromium. It checks lazy runtime loading, all eight broken/repaired examples and the full bounded native fixture corpus against native semantic reports, source privacy, offline analysis after initialization, stale results, limits, keyboard navigation, mobile layout, and timeout/cancellation recovery. Only the controlled stalled-worker tests substitute the worker to exercise the watchdog; all analyzer findings use real Pyodide and the wheel. It writes `dist/browser-qualification.json`, containing the exact wheel hash and browser version. Set `SENTINELS_LAB_URL` to the permanent Hugo page and `SENTINELS_PREVIOUS_LAB_URL` to a retained older workspace to verify session isolation. Set `SENTINELS_PORTFOLIO_URL` to a local Workers preview or deployed article URL to also verify embedding, GPC/DNT independence, scoped headers, and a fresh visitor result. `CHROMIUM_EXECUTABLE` can select an already-installed Chromium binary; otherwise install the version pinned by Playwright.
 
 ## Deployment policy
 
@@ -39,7 +39,9 @@ Twenty files, 16 KiB per file, and 100 KiB total source are enforced before star
 
 ## Guided projects and runtime boundary
 
-`lab/stories.ts` owns the six guided fixtures. `bun run examples` regenerates the equivalent CLI project bundles under `examples/`. The connection story uses a Typer application and typed class methods. The handoff story uses Prefect submission and demonstrates why ordering-only dependencies do not deliver data. The shape story contrasts literal publication fields with a declared Pydantic model.
+`lab/stories.ts` owns the eight guided fixtures. `bun run examples` regenerates the equivalent CLI project bundles under `examples/`. The connection story uses a Typer application and typed class methods. The handoff story uses Prefect submission and demonstrates why ordering-only dependencies do not deliver data. The shape story contrasts literal publication fields with a declared Pydantic model.
+
+The fourth story introduces a production helper that has no coverage declaration. Inspect the independent source census, then deliberately associate a meaningful requirement or classify an internal helper with a reason. The inventory distinguishes declarations with contracts, declared internal intent, unclassified surfaces, stale identities, and unresolved discovery. A regenerated ledger is never automatically accepted.
 
 The fixed runtime bypass example is executed only by the trusted build script. Its JSON record includes source, hash, fixed input, returned value, standard output, Python version, and a separate structural PASS with witness produced by the exact checker wheel. It is labeled separately from editable source analysis. A supported structural path does not establish all-branch execution, ordering, successful task execution, or correct output.
 

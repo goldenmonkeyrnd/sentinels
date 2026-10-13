@@ -2,7 +2,7 @@
 
 Sentinels checks declared integration requirements in Python source. It reports
 where a production entry connects to a validator, where a particular result is
-handed to a consumer, and whether a published shape matches its contract. Each
+handed to a consumer, whether a published shape matches its contract, and which production declarations still need a coverage decision. Each
 result includes its inspected scope, source locations, and available witness.
 
 **A structural connection does not establish successful execution.** A branch
@@ -30,7 +30,7 @@ uv run sentinels check --bundle examples/connection-repaired.json --json
 Create `sentinels.toml` in the application you want to inspect:
 
 ```toml
-version = 1
+version = 2
 source_roots = ["."]
 excludes = ["tests/**", "test_*.py"]
 
@@ -103,6 +103,27 @@ are `string`, `integer`, `number`, `boolean`, `object`, `array`, `null`, and
 `any`. `required` defaults to true and `nullable` to false. Optional presence and
 nullable values are different requirements. A model annotation alone does not
 prove runtime validation happened. Each return shape is checked separately.
+
+Coverage discovers every declaration in selected production directories, including private helpers and declarations outside reachable call paths. Each surface needs a meaningful contract association or an explicit internal classification:
+
+```toml
+[[contracts]]
+kind = "coverage"
+id = "pipeline-coverage"
+roots = ["pipeline"]
+
+[[contracts.ledger]]
+kind = "contract"
+surface = "pipeline.build:main"
+contracts = ["validate-before-publication"]
+
+[[contracts.ledger]]
+kind = "internal"
+surface = "pipeline.build:_format_label"
+reason = "Formats a display label; it does not own an integration requirement."
+```
+
+This is a partial ledger: review and declare a role for every discovered surface. A new unclassified declaration or a stale identity fails coverage. An arbitrary contract ID cannot justify a surface; invalid associations are configuration errors. Internal classification records intent and does not verify behavior. Relevant discovery limitations remain unresolved. Native and browser configuration, bundles, reports, and exported schemas use version 2. Reproduce historical bundles with their original released checker.
 
 See [analysis semantics](docs/semantics.md), the [versioned JSON schemas](docs/schemas/),
 and [browser lab operations](docs/browser-lab.md).
