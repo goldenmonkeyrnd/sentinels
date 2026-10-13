@@ -3,6 +3,17 @@
     "ContractResult": {
       "additionalProperties": false,
       "properties": {
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoverageInventory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "findings": {
           "items": {
             "$ref": "#/$defs/Finding"
@@ -18,7 +29,8 @@
           "enum": [
             "connection",
             "handoff",
-            "shape"
+            "shape",
+            "coverage"
           ],
           "title": "Kind",
           "type": "string"
@@ -54,6 +66,118 @@
         "status"
       ],
       "title": "ContractResult",
+      "type": "object"
+    },
+    "CoverageInventory": {
+      "additionalProperties": false,
+      "properties": {
+        "inspected_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Inspected Files",
+          "type": "array"
+        },
+        "roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Roots",
+          "type": "array"
+        },
+        "stale": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stale",
+          "type": "array"
+        },
+        "surfaces": {
+          "items": {
+            "$ref": "#/$defs/CoverageSurface"
+          },
+          "title": "Surfaces",
+          "type": "array"
+        }
+      },
+      "required": [
+        "roots",
+        "inspected_files",
+        "surfaces"
+      ],
+      "title": "CoverageInventory",
+      "type": "object"
+    },
+    "CoverageSurface": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "default": "unclassified",
+          "enum": [
+            "contract",
+            "internal",
+            "unclassified"
+          ],
+          "title": "Classification",
+          "type": "string"
+        },
+        "contracts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Contracts",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "function",
+            "method",
+            "class",
+            "model",
+            "export",
+            "registration"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "unresolved": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "symbol",
+        "location"
+      ],
+      "title": "CoverageSurface",
       "type": "object"
     },
     "Finding": {
@@ -210,8 +334,8 @@
       "type": "string"
     },
     "version": {
-      "const": 1,
-      "default": 1,
+      "const": 2,
+      "default": 2,
       "title": "Version",
       "type": "integer"
     }

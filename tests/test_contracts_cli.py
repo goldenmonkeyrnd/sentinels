@@ -18,7 +18,7 @@ from sentinels.models import AnalysisReport, Bundle, Config, validate_config
 
 
 def config_data():
-    return {"version": 1, "contracts": [{"kind": "connection", "id": "validation", "entry": "app:main", "target": "app:validate"}]}
+    return {"version": 2, "contracts": [{"kind": "connection", "id": "validation", "entry": "app:main", "target": "app:validate"}]}
 
 
 class ContractValidationTests(unittest.TestCase):

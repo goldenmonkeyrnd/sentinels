@@ -12,16 +12,18 @@ import json
 import platform
 import symtable
 from collections import deque
+from typing import get_args
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import ValidationError
 
-from .models import (AnalysisReport, Config, ContractResult, Finding, GraphEdge,
+from . import __version__ as VERSION
+from .coverage import CensusError, CensusLimitError, check_coverage, coverage_roots, in_roots
+from .models import (AnalysisReport, Config, ContractKind, ContractResult, Finding, GraphEdge,
                      SourceLocation)
 
-from . import __version__ as VERSION
 _MISSING = object()
 
 
@@ -81,6 +83,7 @@ class Function:
     mode: str = "method"
     opaque: bool = False
     prefect: bool = False
+    conditional: bool = False
 
 
 @dataclass
@@ -266,7 +269,7 @@ class Program:
             self.tables[(module, child.get_lineno(), child.get_name())] = child
             self.index_tables(module, child)
 
-    def index(self, module: str, nodes: list[ast.stmt], prefix: str = "", owner: str | None = None) -> None:
+    def index(self, module: str, nodes: list[ast.stmt], prefix: str = "", owner: str | None = None, conditional: bool = False) -> None:
         for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = prefix + node.name
@@ -276,18 +279,27 @@ class Program:
                 glob = {symbol.get_name() for symbol in table.get_symbols() if symbol.is_global()} if table else set()
                 if key in self.functions or key in self.classes:
                     raise SourceError(f"duplicate declaration identity {key}")
-                self.functions[key] = Function(key, module, node, owner, local, glob)
+                self.functions[key] = Function(key, module, node, owner, local, glob, conditional=conditional)
                 self.index(module, node.body, name + ".<locals>.")
             elif isinstance(node, ast.ClassDef):
                 key = module + ":" + prefix + node.name
                 if key in self.functions or key in self.classes:
                     raise SourceError(f"duplicate declaration identity {key}")
                 self.classes[key] = Class(key, module, node, [ast.unparse(b) for b in node.bases], {}, dynamic=bool(node.keywords or node.decorator_list))
-                self.index(module, node.body, prefix + node.name + ".", key)
+                self.index(module, node.body, prefix + node.name + ".", key, conditional)
                 self.classes[key].methods = {f.node.name: f.key for f in self.functions.values() if f.owner == key}
                 if set(self.classes[key].methods) & {"__getattribute__", "__getattr__", "__setattr__", "__get__"}:
                     self.classes[key].dynamic = True
                 self.classes[key].model = False
+            elif isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match)):
+                # Census and resolution share declaration identities. Conditional
+                # definitions stay explicit candidates; their availability is
+                # unresolved rather than silently treated as unconditional.
+                groups = [getattr(node, attribute, []) for attribute in ("body", "orelse", "finalbody")]
+                groups.extend(handler.body for handler in getattr(node, "handlers", []))
+                groups.extend(case.body for case in getattr(node, "cases", []))
+                for group in groups:
+                    self.index(module, group, prefix, owner, True)
 
     def resolve_text(self, module: str, text: str) -> str:
         bits = text.split(".")
@@ -1075,6 +1087,12 @@ class Engine:
             state.uncertain |= choice.uncertain
             return choice.env["$return"]
         fn = self.p.functions[key]
+        if fn.conditional:
+            reason = f"conditional declaration availability is unresolved: {key}"
+            self.reasons.add(reason)
+            self.blocked.add(reason)
+            state.uncertain = True
+            return unknown(reason)
         if fn.opaque and not bypass:
             self.reasons.add(f"opaque decorator on {key}")
             self.blocked.add(f"opaque decorator on {key}")
@@ -1487,6 +1505,60 @@ def shape_result(program: Program, contract: Any) -> tuple[ContractResult, list[
     return ContractResult(id=contract.id, kind=contract.kind, status=status, findings=failures or ([finding] if status == "PASS" else []), unresolved=sorted(reasons)), engine.edges
 
 
+def integration_result(program: Program, contract: Any) -> tuple[ContractResult, list[GraphEdge]]:
+    engine = Engine(program, contract)
+    value, state = engine.run(contract.entry)
+    witness: list[GraphEdge] = []
+    findings: list[Finding] = []
+    if contract.kind == "connection":
+        proven = contract.target in engine.visited
+        if proven:
+            status = "PASS"
+            witness = engine.witness(contract.entry, contract.target)
+            findings.append(Finding(code="required-connection", message=f"supported structural path reaches {contract.target}", location=witness[-1].location if witness else None))
+        else:
+            status = "UNRESOLVED" if engine.blocked else "FAIL"
+            findings.append(Finding(code="missing-connection", message=f"no supported structural path from {contract.entry} to {contract.target}"))
+    else:
+        tokens = {token for token, _ in state.produced if token.startswith(contract.producer + "@")}
+        delivered = {token for token, field in state.delivered if contract.field is None or field == contract.field}
+        paths = engine.path_states or [state]
+        complete_paths = []
+        for path in paths:
+            produced_on_path = {token for token, _ in path.produced if token.startswith(contract.producer + "@")}
+            delivered_on_path = {token for token, field in path.delivered if contract.field is None or field == contract.field}
+            complete = bool(produced_on_path) and produced_on_path <= delivered_on_path
+            complete_paths.append(complete)
+            if not complete and not path.uncertain:
+                engine.handoff_bad = True
+        proven = all(complete_paths) and bool(tokens) and tokens <= delivered and not engine.handoff_bad
+        if proven:
+            status = "PASS"
+            destination = contract.consumer or contract.entry
+            witness = engine.witness(contract.entry, contract.producer) + [edge for edge in engine.edges if edge.kind == "handoff"]
+            findings.append(Finding(code="required-handoff", message=f"identified producer result reaches {destination}"))
+        else:
+            status = "FAIL" if engine.handoff_bad else "UNRESOLVED" if engine.blocked else "FAIL"
+            message = "producer result is not delivered on every analyzed branch" if engine.handoff_bad else "identified producer result does not reach the declared destination"
+            findings.append(Finding(code="missing-handoff", message=message))
+    # Unrelated uncertainty is retained as scope information without
+    # invalidating a proven supported structural path.
+    result = ContractResult(id=contract.id, kind=contract.kind, status=status, findings=findings, witness=witness, unresolved=sorted(engine.reasons))
+    edges = engine.edges
+    return result, edges
+
+
+def connection_result(program: Program, contract: Any) -> tuple[ContractResult, list[GraphEdge]]:
+    return integration_result(program, contract)
+
+
+def handoff_result(program: Program, contract: Any) -> tuple[ContractResult, list[GraphEdge]]:
+    return integration_result(program, contract)
+
+
+RULE_HANDLERS = {"connection": connection_result, "handoff": handoff_result, "shape": shape_result, "coverage": check_coverage}
+
+
 def analyze_sources(files: dict[str, str], config: Config | dict[str, Any]) -> AnalysisReport:
     """Analyze source text as data using the same JSON contracts as the browser.
 
@@ -1498,10 +1570,12 @@ def analyze_sources(files: dict[str, str], config: Config | dict[str, Any]) -> A
     configuration = None
     try:
         configuration = validate_config(config)
-        bundle = validate_bundle({"version": 1, "files": files, "config": configuration.model_dump(mode="json")})
-        inspected = {path: source for path, source in bundle.files.items() if selected(path, configuration)}
+        bundle = validate_bundle({"version": 2, "files": files, "config": configuration.model_dump(mode="json")})
+        inspected = {path: source for path, source in bundle.files.items() if selected(path, configuration) or path.endswith(".py") and in_roots(path, coverage_roots(configuration))}
         if not inspected:
             raise SourceError("selected source scope is empty")
+        if set(RULE_HANDLERS) != set(get_args(ContractKind)):
+            raise SourceError("rule dispatcher does not register exactly the supported contract families")
         program = Program(inspected, configuration)
     except LimitError as exc:
         return base_report(inspected, configuration or config, status="UNRESOLVED", errors=[Finding(code="analysis-limit", message=str(exc))])
@@ -1516,53 +1590,12 @@ def analyze_sources(files: dict[str, str], config: Config | dict[str, Any]) -> A
             # Abstract module declarations and registration storage must be fresh
             # for each requirement; one analysis cannot mutate another's inputs.
             program = Program(inspected, configuration)
-            if contract.kind == "shape":
-                result, edges = shape_result(program, contract)
-            else:
-                engine = Engine(program, contract)
-                value, state = engine.run(contract.entry)
-                witness: list[GraphEdge] = []
-                findings: list[Finding] = []
-                if contract.kind == "connection":
-                    proven = contract.target in engine.visited
-                    if proven:
-                        status = "PASS"
-                        witness = engine.witness(contract.entry, contract.target)
-                        findings.append(Finding(code="required-connection", message=f"supported structural path reaches {contract.target}", location=witness[-1].location if witness else None))
-                    else:
-                        status = "UNRESOLVED" if engine.blocked else "FAIL"
-                        findings.append(Finding(code="missing-connection", message=f"no supported structural path from {contract.entry} to {contract.target}"))
-                else:
-                    tokens = {token for token, _ in state.produced if token.startswith(contract.producer + "@")}
-                    delivered = {token for token, field in state.delivered if contract.field is None or field == contract.field}
-                    paths = engine.path_states or [state]
-                    complete_paths = []
-                    for path in paths:
-                        produced_on_path = {token for token, _ in path.produced if token.startswith(contract.producer + "@")}
-                        delivered_on_path = {token for token, field in path.delivered if contract.field is None or field == contract.field}
-                        complete = bool(produced_on_path) and produced_on_path <= delivered_on_path
-                        complete_paths.append(complete)
-                        if not complete and not path.uncertain:
-                            engine.handoff_bad = True
-                    proven = all(complete_paths) and bool(tokens) and tokens <= delivered and not engine.handoff_bad
-                    if proven:
-                        status = "PASS"
-                        destination = contract.consumer or contract.entry
-                        witness = engine.witness(contract.entry, contract.producer) + [edge for edge in engine.edges if edge.kind == "handoff"]
-                        findings.append(Finding(code="required-handoff", message=f"identified producer result reaches {destination}"))
-                    else:
-                        status = "FAIL" if engine.handoff_bad else "UNRESOLVED" if engine.blocked else "FAIL"
-                        message = "producer result is not delivered on every analyzed branch" if engine.handoff_bad else "identified producer result does not reach the declared destination"
-                        findings.append(Finding(code="missing-handoff", message=message))
-                # Unrelated uncertainty is retained as scope information without
-                # invalidating a proven supported structural path.
-                result = ContractResult(id=contract.id, kind=contract.kind, status=status, findings=findings, witness=witness, unresolved=sorted(engine.reasons))
-                edges = engine.edges
+            result, edges = RULE_HANDLERS[contract.kind](program, contract)
             results.append(result)
             all_edges.extend(edge for edge in edges if edge not in all_edges)
-        except LimitError as exc:
+        except (LimitError, CensusLimitError) as exc:
             results.append(ContractResult(id=contract.id, kind=contract.kind, status="UNRESOLVED", unresolved=[str(exc)]))
-        except (SourceError, RecursionError) as exc:
+        except (SourceError, CensusError, RecursionError) as exc:
             results.append(ContractResult(id=contract.id, kind=contract.kind, status="ERROR", findings=[Finding(code="selected-input-error", message=str(exc))]))
     return base_report(inspected, configuration, status=status_of([result.status for result in results]), contracts=results,
                        edges=sorted(all_edges, key=lambda e: (e.source, e.location.path, e.location.line, e.location.column, e.target, e.kind)),
@@ -1571,7 +1604,8 @@ def analyze_sources(files: dict[str, str], config: Config | dict[str, Any]) -> A
                                     "Handoff follows identified producer values on analyzed paths; unknown dispatch remains unresolved.",
                                     "Prefect scheduling and future delivery are modeled structurally, without observing execution or map cardinality.",
                                     "Typer registration follows application ownership; selected runtime command and callback options are not observed.",
-                                    "Pydantic declarations describe field shape; successful runtime validation is not established."])
+                                    "Pydantic declarations describe field shape; successful runtime validation is not established.",
+                                    "Coverage inventories source declarations in explicit production roots; accounting is not proof of runtime behavior or universal data-flow discovery."])
 
 
 def analyze_project(root: Path | str, config: Config | dict[str, Any]) -> AnalysisReport:
@@ -1582,19 +1616,26 @@ def analyze_project(root: Path | str, config: Config | dict[str, Any]) -> Analys
         configuration = validate_config(config)
         base = Path(root).resolve(strict=True)
         paths = set()
-        for source_root in configuration.source_roots:
+        for source_root in sorted(set(configuration.source_roots) | set(coverage_roots(configuration))):
             folder = base / source_root
             if not folder.is_dir():
                 raise SourceError(f"selected source root {source_root} is not a directory")
             # os.walk does not follow symlink directories or enter generated
             # environments; explicit selected artifacts are handled below.
             import os
-            for directory, dirs, names in os.walk(folder, followlinks=False):
+            def unreadable_directory(error: OSError) -> None:
+                raise error
+            for directory, dirs, names in os.walk(folder, followlinks=False, onerror=unreadable_directory):
+                for name in dirs:
+                    path = Path(directory) / name
+                    relative = path.relative_to(base).as_posix()
+                    if path.is_symlink() and in_roots(relative + "/", coverage_roots(configuration)):
+                        raise SourceError(f"coverage directory {relative} is a symbolic link; complete declaration inventory cannot be established")
                 dirs[:] = sorted(name for name in dirs if name not in (".git", ".venv", "node_modules", "__pycache__", "dist", "build", "public") and not (Path(directory) / name).is_symlink())
                 for name in sorted(names):
                     path = Path(directory) / name
                     relative = path.relative_to(base).as_posix()
-                    if name.endswith(".py") and selected(relative, configuration):
+                    if name.endswith(".py") and (selected(relative, configuration) or in_roots(relative, coverage_roots(configuration))):
                         paths.add(relative)
         for contract in configuration.contracts:
             if contract.kind == "shape" and contract.mode == "artifact":

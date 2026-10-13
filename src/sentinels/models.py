@@ -9,7 +9,8 @@ from typing import Annotated, Any, Literal, Self, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Status: TypeAlias = Literal["PASS", "FAIL", "UNRESOLVED", "ERROR"]
-ContractKind: TypeAlias = Literal["connection", "handoff", "shape"]
+ContractKind: TypeAlias = Literal["connection", "handoff", "shape", "coverage"]
+SurfaceKind: TypeAlias = Literal["function", "method", "class", "model", "export", "registration"]
 JSONType: TypeAlias = Literal["string", "integer", "number", "boolean", "object", "array", "null", "any"]
 
 
@@ -86,14 +87,63 @@ class ShapeContract(StrictModel):
     allow_extra: bool = False
 
 
+class ContractAssociation(StrictModel):
+    kind: Literal["contract"] = "contract"
+    surface: str = Field(min_length=1)
+    contracts: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def valid_ids(self) -> Self:
+        if not self.surface.strip() or any(not identity.strip() for identity in self.contracts):
+            raise ValueError("coverage identities must not be blank")
+        if len(set(self.contracts)) != len(self.contracts):
+            raise ValueError("duplicate associated contract identity")
+        return self
+
+
+class InternalClassification(StrictModel):
+    kind: Literal["internal"] = "internal"
+    surface: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def nonblank(self) -> Self:
+        if not self.surface.strip() or not self.reason.strip():
+            raise ValueError("an internal classification requires a surface and a nonblank reason")
+        return self
+
+
+CoverageEntry: TypeAlias = Annotated[ContractAssociation | InternalClassification, Field(discriminator="kind")]
+
+
+class CoverageContract(StrictModel):
+    kind: Literal["coverage"] = "coverage"
+    id: str = Field(min_length=1)
+    roots: list[str] = Field(min_length=1)
+    ledger: list[CoverageEntry] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def valid_inventory(self) -> Self:
+        for root in self.roots:
+            path = PurePosixPath(root)
+            if not root or path.is_absolute() or ".." in path.parts or "\\" in root or path.as_posix() != root:
+                raise ValueError("coverage roots must be canonical relative directories")
+        if len(set(self.roots)) != len(self.roots):
+            raise ValueError("duplicate coverage root")
+        identities = [item.surface for item in self.ledger]
+        if len(set(identities)) != len(identities):
+            raise ValueError("duplicate coverage surface identity")
+        return self
+
+
 Contract: TypeAlias = Annotated[
-    ConnectionContract | HandoffContract | ShapeContract,
+    ConnectionContract | HandoffContract | ShapeContract | CoverageContract,
     Field(discriminator="kind"),
 ]
 
 
 class Config(StrictModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     source_roots: list[str] = Field(default_factory=lambda: ["."])
     excludes: list[str] = Field(default_factory=lambda: ["tests/**", "test_*.py"])
     max_nodes: int = Field(default=20_000, ge=1, le=1_000_000)
@@ -114,6 +164,14 @@ class Config(StrictModel):
         for path in self.source_roots:
             if not path or PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts or "\\" in path:
                 raise ValueError("source roots must be relative paths within the project")
+        kinds = {contract.id: contract.kind for contract in self.contracts}
+        for contract in self.contracts:
+            if contract.kind == "coverage":
+                for entry in contract.ledger:
+                    if entry.kind == "contract":
+                        for identity in entry.contracts:
+                            if identity not in kinds or kinds[identity] == "coverage":
+                                raise ValueError(f"coverage association {identity} must name an existing noncoverage contract")
         return self
 
 
@@ -137,6 +195,24 @@ class Finding(StrictModel):
     location: SourceLocation | None = None
 
 
+class CoverageSurface(StrictModel):
+    id: str
+    kind: SurfaceKind
+    symbol: str
+    location: SourceLocation
+    classification: Literal["contract", "internal", "unclassified"] = "unclassified"
+    contracts: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    unresolved: list[str] = Field(default_factory=list)
+
+
+class CoverageInventory(StrictModel):
+    roots: list[str]
+    inspected_files: list[str]
+    surfaces: list[CoverageSurface]
+    stale: list[str] = Field(default_factory=list)
+
+
 class ContractResult(StrictModel):
     id: str
     kind: ContractKind
@@ -144,10 +220,11 @@ class ContractResult(StrictModel):
     findings: list[Finding] = Field(default_factory=list)
     witness: list[GraphEdge] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
+    coverage: CoverageInventory | None = None
 
 
 class AnalysisReport(StrictModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     checker_version: str
     parser_version: str
     source_hash: str
@@ -161,7 +238,7 @@ class AnalysisReport(StrictModel):
 
 
 class Bundle(StrictModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     files: dict[str, str]
     config: Config
 

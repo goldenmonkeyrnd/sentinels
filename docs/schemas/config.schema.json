@@ -33,6 +33,87 @@
       "title": "ConnectionContract",
       "type": "object"
     },
+    "ContractAssociation": {
+      "additionalProperties": false,
+      "properties": {
+        "contracts": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Contracts",
+          "type": "array"
+        },
+        "kind": {
+          "const": "contract",
+          "default": "contract",
+          "title": "Kind",
+          "type": "string"
+        },
+        "surface": {
+          "minLength": 1,
+          "title": "Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "surface",
+        "contracts"
+      ],
+      "title": "ContractAssociation",
+      "type": "object"
+    },
+    "CoverageContract": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "coverage",
+          "default": "coverage",
+          "title": "Kind",
+          "type": "string"
+        },
+        "ledger": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "contract": "#/$defs/ContractAssociation",
+                "internal": "#/$defs/InternalClassification"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/ContractAssociation"
+              },
+              {
+                "$ref": "#/$defs/InternalClassification"
+              }
+            ]
+          },
+          "title": "Ledger",
+          "type": "array"
+        },
+        "roots": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Roots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "roots"
+      ],
+      "title": "CoverageContract",
+      "type": "object"
+    },
     "FieldSpec": {
       "additionalProperties": false,
       "properties": {
@@ -149,6 +230,33 @@
       "title": "HandoffContract",
       "type": "object"
     },
+    "InternalClassification": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "internal",
+          "default": "internal",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "surface": {
+          "minLength": 1,
+          "title": "Surface",
+          "type": "string"
+        }
+      },
+      "required": [
+        "surface",
+        "reason"
+      ],
+      "title": "InternalClassification",
+      "type": "object"
+    },
     "ShapeContract": {
       "additionalProperties": false,
       "properties": {
@@ -209,6 +317,7 @@
         "discriminator": {
           "mapping": {
             "connection": "#/$defs/ConnectionContract",
+            "coverage": "#/$defs/CoverageContract",
             "handoff": "#/$defs/HandoffContract",
             "shape": "#/$defs/ShapeContract"
           },
@@ -223,6 +332,9 @@
           },
           {
             "$ref": "#/$defs/ShapeContract"
+          },
+          {
+            "$ref": "#/$defs/CoverageContract"
           }
         ]
       },
@@ -259,8 +371,8 @@
       "type": "array"
     },
     "version": {
-      "const": 1,
-      "default": 1,
+      "const": 2,
+      "default": 2,
       "title": "Version",
       "type": "integer"
     }
