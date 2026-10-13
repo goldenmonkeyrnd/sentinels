@@ -1,11 +1,11 @@
 // Only trusted checker code runs in this worker. Submitted Python remains JSON data.
+import { loadManifest } from './manifest';
 interface Pyodide { loadPackage(names: string[], options?: object): Promise<void>; unpackArchive(data: Uint8Array, format: string): void; runPythonAsync(source: string): Promise<unknown>; globals: { set(key: string, value: unknown): void; delete(key: string): void } }
-interface RuntimeManifest { runtime: string; wheel: { file: string; sha256: string }; version: string }
 let pyodide: Pyodide | undefined;
 let initializing: Promise<void> | undefined;
 async function sha256(bytes: ArrayBuffer): Promise<string> { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join(''); }
 async function initialize() {
-    const manifest = await (await fetch('./manifest.json')).json() as RuntimeManifest;
+    const manifest = await loadManifest();
     const runtime = new URL('./runtime/', self.location.href).href;
     const module = await import(/* @vite-ignore */ new URL('pyodide.mjs', runtime).href);
     pyodide = await module.loadPyodide({ indexURL: runtime, lockFileURL: new URL('pyodide-lock.json', runtime).href, packageBaseUrl: runtime }) as Pyodide;

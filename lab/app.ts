@@ -1,4 +1,5 @@
 import { stories, type ProjectBundle } from './stories';
+import { loadManifest } from './manifest';
 interface Location { path: string; line: number; column?: number }
 interface Edge { source: string; target: string; kind: string; location?: Location; detail?: string }
 interface Finding { code: string; message: string; location?: Location | null }
@@ -12,6 +13,18 @@ const reportDownload = get<HTMLButtonElement>('download-report');
 let currentStory = stories[0], files: Record<string, string> = {}, selectedFile = '', worker: Worker | undefined;
 let ready = false, busy = false, sequence = 0, pending = 0, timeout: ReturnType<typeof setTimeout> | undefined, lastReport: Report | undefined, stale = false;
 const utf8 = new TextEncoder();
+void loadManifest().then(manifest => {
+    for (const label of document.querySelectorAll('[data-release-version]')) label.textContent = manifest.release.tag;
+    get<HTMLAnchorElement>('release-link').href = manifest.release.url;
+    get<HTMLAnchorElement>('source-link').href = manifest.release.source_url;
+    get<HTMLAnchorElement>('source-archive-link').href = manifest.release.source_archive_url;
+    const provenance = [manifest.source_commit ? `Source ${manifest.source_commit}` : '', manifest.schema_version ? `Contract schema ${manifest.schema_version}` : '', manifest.source_dirty ? 'Source includes uncommitted changes' : ''].filter(Boolean);
+    get('release-provenance').textContent = provenance.join(' · ');
+    activate.disabled = false;
+}).catch(error => {
+    runtimeStatus.textContent = `Release metadata error: ${error instanceof Error ? error.message : String(error)}`;
+    activate.disabled = true;
+});
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] { const result = document.createElement(tag); if (text !== undefined) result.textContent = text; if (className) result.className = className; return result; }
 function saveSource() { if (selectedFile) files[selectedFile] = source.value; }

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const directory = resolve(process.env.SENTINELS_LAB_DIR ?? root + '/dist/lab');
+const releaseManifest = JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8'));
 const results = [], requests = [], consoleErrors = [];
 const csp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
 const server = createServer(async (req, res) => {
@@ -18,12 +19,42 @@ const base = `http://127.0.0.1:${server.address().port}/`;
 let browser;
 function semantic(report) { return { status: report.status, scope: report.scope, contracts: report.contracts, edges: report.edges, assumptions: report.assumptions, errors: report.errors, source_hash: report.source_hash, config_hash: report.config_hash }; }
 function native(bundlePath) { const command = spawnSync(resolve(root, '.venv/bin/python'), ['-m', 'sentinels', 'check', '--bundle', bundlePath, '--json'], { cwd: root, encoding: 'utf8' }); if (![0, 1, 2, 3].includes(command.status)) throw new Error(command.stderr || command.stdout); return JSON.parse(command.stdout); }
+async function assertProvenance(workspace, expected = releaseManifest) {
+    await workspace.locator('#activate:not([disabled])').waitFor();
+    assert.deepEqual(await workspace.locator('[data-release-version]').allTextContents(), [expected.release.tag, expected.release.tag]);
+    for (const [id, field] of [['release-link', 'url'], ['source-link', 'source_url'], ['source-archive-link', 'source_archive_url']]) assert.equal(await workspace.locator(`#${id}`).getAttribute('href'), expected.release[field], `${id} uses bundled release metadata`);
+    if (expected.source_commit) assert.match(await workspace.locator('#release-provenance').innerText(), new RegExp(expected.source_commit));
+}
+async function runWorkspace(workspace) {
+    await workspace.getByRole('button', { name: 'Try the lab', exact: true }).click();
+    await workspace.locator('#run:not([disabled])').waitFor({ timeout: 32000 });
+    await workspace.getByRole('button', { name: 'Load repair', exact: true }).click();
+    await workspace.getByRole('button', { name: 'Run fresh analysis', exact: true }).click();
+    await workspace.locator('#run:not([disabled])').waitFor({ timeout: 7000 });
+    assert.equal(JSON.parse(await workspace.locator('#report-json').textContent()).status, 'PASS');
+}
+async function assertReleasedWorkspace(context, iframe, documentURL) {
+    const source = await iframe.getAttribute('src');
+    assert.ok(source, 'Workspace iframe has a release URL');
+    const url = new URL(source, documentURL);
+    assert.match(url.pathname, /^\/labs\/sentinels\/_bundles\/[a-f0-9]{64}\/$/, 'Workspace is isolated at the immutable archive hash');
+    const response = await context.request.get(url.href);
+    assert.equal(response.status(), 200);
+    const policy = response.headers()['content-security-policy'] ?? '';
+    assert.ok(policy.includes("'wasm-unsafe-eval'") && policy.includes("frame-ancestors 'self'"), 'Workspace policy permits Wasm and same-origin framing');
+    const manifestResponse = await context.request.get(new URL('manifest.json', url).href);
+    assert.equal(manifestResponse.status(), 200);
+    const manifest = await manifestResponse.json();
+    assert.equal(manifest.wheel.sha256, releaseManifest.wheel.sha256, 'Website pins the qualified wheel');
+    return manifest;
+}
 try {
     browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {}) });
     const context = await browser.newContext(); const page = await context.newPage();
     page.on('request', request => requests.push({ url: request.url(), method: request.method(), body: request.postData() }));
     page.on('pageerror', error => consoleErrors.push(String(error)));
     await page.goto(base); await page.waitForLoadState('networkidle');
+    await assertProvenance(page); results.push('visible version, source identity, and exact download links come from the bundled manifest');
     assert.equal(requests.filter(request => /runtime\/|\.whl|\.wasm|pyodide/.test(request.url)).length, 0, 'No runtime downloads before activation'); results.push('zero runtime downloads before activation');
     assert.equal(await page.locator('#source-editor').getAttribute('aria-describedby'), 'source-help');
     await page.getByRole('button', { name: 'Try the lab', exact: true }).click();
@@ -88,7 +119,29 @@ try {
     if (process.env.SENTINELS_PORTFOLIO_URL) {
         const siteContext = await browser.newContext({ extraHTTPHeaders: { DNT: '1', 'Sec-GPC': '1' } }); await siteContext.addInitScript(() => { Object.defineProperty(navigator, 'globalPrivacyControl', { value: true }); Object.defineProperty(navigator, 'doNotTrack', { value: '1' }); }); const site = await siteContext.newPage(), siteRequests = []; site.on('request', request => siteRequests.push(request.url()));
         const mainResponse = await site.goto(process.env.SENTINELS_PORTFOLIO_URL); await site.waitForLoadState('networkidle'); assert.equal(siteRequests.filter(url => url.includes('/labs/sentinels/')).length, 0, 'Portfolio does not load lab before activation'); assert.ok(!(await mainResponse.allHeaders())['content-security-policy'].includes('wasm-unsafe-eval'), 'Main site policy remains narrow');
-        await site.locator('[data-sentinels-activate]').click(); const frame = site.frameLocator('[data-sentinels-frame] iframe'); await frame.getByRole('button', { name: 'Try the lab', exact: true }).waitFor(); assert.equal(siteRequests.filter(url => /runtime\/|\.whl|\.wasm/.test(url)).length, 0, 'Embedded runtime waits for its activation'); await frame.getByRole('button', { name: 'Try the lab', exact: true }).click(); await frame.locator('#run:not([disabled])').waitFor({ timeout: 32000 }); await frame.getByRole('button', { name: 'Load repair', exact: true }).click(); await frame.getByRole('button', { name: 'Run fresh analysis', exact: true }).click(); await frame.locator('#run:not([disabled])').waitFor({ timeout: 7000 }); assert.equal(JSON.parse(await frame.locator('#report-json').textContent()).status, 'PASS'); const labURL = new URL('/labs/sentinels/v0.1.0/', process.env.SENTINELS_PORTFOLIO_URL); const labResponse = await siteContext.request.get(labURL.href); const labCSP = labResponse.headers()['content-security-policy']; assert.ok(labCSP.includes("'wasm-unsafe-eval'") && labCSP.includes("frame-ancestors 'self'"), 'Lab policy permits Wasm and same-origin framing'); results.push('portfolio activation, DNT/GPC independence, scoped headers, and embedded visitor-generated PASS'); await siteContext.close();
+        await site.locator('[data-sentinels-activate]').click();
+        const iframe = site.locator('[data-sentinels-frame] iframe'), frame = site.frameLocator('[data-sentinels-frame] iframe');
+        const publishedManifest = await assertReleasedWorkspace(siteContext, iframe, site.url());
+        await assertProvenance(frame, publishedManifest);
+        assert.equal(siteRequests.filter(url => /runtime\/|\.whl|\.wasm/.test(url)).length, 0, 'Embedded runtime waits for its activation');
+        await runWorkspace(frame);
+        results.push('article activation, DNT/GPC independence, exact release provenance, scoped headers, and embedded visitor-generated PASS');
+        const labURL = new URL('/labs/sentinels/', process.env.SENTINELS_PORTFOLIO_URL);
+        const direct = await siteContext.newPage(), directRequests = []; direct.on('request', request => directRequests.push(request.url()));
+        const shellResponse = await direct.goto(labURL.href); await direct.waitForLoadState('networkidle');
+        assert.equal(direct.url(), labURL.href, 'Public lab URL has no release version');
+        assert.ok(!(await shellResponse.allHeaders())['content-security-policy'].includes('wasm-unsafe-eval'), 'Stable shell keeps the main site policy');
+        const directIframe = direct.locator('[data-sentinels-workspace] iframe'), directFrame = direct.frameLocator('[data-sentinels-workspace] iframe');
+        const directManifest = await assertReleasedWorkspace(siteContext, directIframe, direct.url()); await assertProvenance(directFrame, directManifest);
+        assert.equal(directRequests.filter(url => /runtime\/|\.whl|\.wasm/.test(url)).length, 0, 'Direct-open runtime waits for activation');
+        await runWorkspace(directFrame); results.push('stable direct-open shell retains immutable workspace and generates a fresh PASS');
+        for (const path of ['/labs/sentinels/v0.1.0/', '/labs/sentinels/v0.1.0', '/labs/sentinels/v0.1.0/index.html']) {
+            const legacy = await siteContext.request.get(new URL(path, labURL).href, { maxRedirects: 0 });
+            assert.ok([301, 302, 307, 308].includes(legacy.status()), `Legacy landing ${path} redirects`);
+            assert.equal(new URL(legacy.headers().location, labURL).href, labURL.href);
+        }
+        results.push('legacy release landing pages redirect to the stable lab URL');
+        await siteContext.close();
     }
     await mkdir(resolve(root, 'dist'), { recursive: true }); await writeFile(resolve(root, 'dist/browser-qualification.json'), JSON.stringify({ tests: results, parser_version: JSON.parse(await page.locator('#report-json').textContent()).parser_version, checker_version: JSON.parse(await page.locator('#report-json').textContent()).checker_version, pyodide: '314.0.7', browser: await browser.version(), wheel_manifest: JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8')), fixture_cases: 6 + corpusResults.length }, null, 2) + '\n');
     console.log(JSON.stringify({ passed: results.length, results }, null, 2));
