@@ -138,6 +138,58 @@ class CallPaths(Exception):
         self.choices = choices
 
 
+def flow_evidence(value: Val, seen: frozenset[int] = frozenset()) -> tuple:
+    """Identity/dispatch/provenance that must remain correlated across returns.
+
+    Literal alternatives stay in the merged value, but cannot establish a
+    producer handoff themselves. Do not merge receiver identities, callable
+    targets, pending coroutine arguments, futures, or selected field origins.
+    """
+    if id(value) in seen:
+        return ("cyclic-value", id(value))
+    seen = seen | {id(value)}
+    mappings = []
+    for mapping in value.maps:
+        fields = tuple(sorted((name, evidence) for name, child in mapping.items()
+                              if (evidence := flow_evidence(child, seen))))
+        if fields:
+            mappings.append(fields)
+    bound = tuple((key, flow_evidence(receiver, seen)) for key, receiver in value.bound)
+    pending = tuple((key, tuple(flow_evidence(arg, seen) for arg in args),
+                     tuple((name, flow_evidence(arg, seen)) for name, arg in kwargs),
+                     flow_evidence(receiver, seen) if receiver is not None else None)
+                    for key, args, kwargs, receiver in value.pending)
+    if not (value.refs or value.classes or value.identities or value.origins or
+            value.future or value.apps or mappings or bound or pending):
+        return ()
+    return (value.refs, value.classes, value.identities, value.origins,
+            value.future, value.apps, tuple(mappings), bound, pending)
+
+
+def summarize_handoff_paths(values: list[Val], endings: list[State]) -> tuple[list[Val], list[State]]:
+    """Collapse helper alternatives only when their causal evidence agrees."""
+    groups: dict[tuple, list[tuple[Val, State]]] = {}
+    for value, ending in zip(values, endings):
+        attrs = tuple(sorted((key, evidence) for key, attr in ending.attrs.items()
+                             if (evidence := flow_evidence(attr))))
+        key = (frozenset(ending.produced), frozenset(ending.delivered),
+               ending.uncertain, flow_evidence(value), attrs)
+        groups.setdefault(key, []).append((value, ending))
+    summarized_values, summarized_endings = [], []
+    for alternatives in groups.values():
+        output = merge([value for value, _ in alternatives])
+        summary = alternatives[0][1]
+        if len(alternatives) > 1:
+            summary = State({}, produced=summary.produced.copy(),
+                            delivered=summary.delivered.copy(), uncertain=summary.uncertain)
+            keys = set().union(*(ending.attrs.keys() for _, ending in alternatives))
+            summary.attrs = {key: merge([ending.attrs.get(key, unknown("branch-dependent receiver field"))
+                                        for _, ending in alternatives]) for key in keys}
+        summarized_values.append(output)
+        summarized_endings.append(summary)
+    return summarized_values, summarized_endings
+
+
 class SourceError(ValueError):
     pass
 
@@ -1091,6 +1143,9 @@ class Engine:
                     for (owner, name), field_value in list(ending.attrs.items()):
                         if owner == instance:
                             ending.attrs[(owner, name)] = tag_fields(field_value, name)
+        if len(endings) > 1 and getattr(contract, "kind", None) == "handoff" and self.stack:
+            if fn.node.name != "__init__":
+                values, endings = summarize_handoff_paths(values, endings)
         if len(endings) > 1 and getattr(contract, "kind", None) == "handoff" and self.stack:
             if fn.node.name == "__init__":
                 # Constructor receivers cannot be replayed without preserving
