@@ -17,7 +17,7 @@ const server = createServer(async (req, res) => {
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 const base = `http://127.0.0.1:${server.address().port}/`;
 let browser;
-function semantic(report) { return { status: report.status, scope: report.scope, contracts: report.contracts, edges: report.edges, assumptions: report.assumptions, errors: report.errors, source_hash: report.source_hash, config_hash: report.config_hash }; }
+function semantic(report) { return { version: report.version, status: report.status, scope: report.scope, contracts: report.contracts, edges: report.edges, assumptions: report.assumptions, errors: report.errors, source_hash: report.source_hash, config_hash: report.config_hash }; }
 function native(bundlePath) { const wheel = resolve(directory, releaseManifest.wheel.file); const bridge = 'import sys; sys.path.insert(0,sys.argv.pop(1)); from sentinels.cli import main; raise SystemExit(main())'; const command = spawnSync(resolve(root, '.venv/bin/python'), ['-c', bridge, wheel, 'check', '--bundle', bundlePath, '--json'], { cwd: root, encoding: 'utf8' }); if (![0, 1, 2, 3].includes(command.status)) throw new Error(command.stderr || command.stdout); return JSON.parse(command.stdout); }
 async function assertProvenance(workspace, expected = releaseManifest) {
     await workspace.locator('#activate:not([disabled])').waitFor();
@@ -61,14 +61,25 @@ try {
     await page.waitForFunction(() => !document.querySelector('#run').disabled, null, { timeout: 32_000 });
     assert.match(await page.locator('#runtime-status').innerText(), /Ready/); results.push('real Pyodide314.0.7 + Pydantic2.12.5 + released wheel initialized');
     async function runReport() { await page.getByRole('button', { name: 'Run fresh analysis', exact: true }).click(); await page.waitForFunction(() => !document.querySelector('#run').disabled, null, { timeout: 7000 }); const raw = await page.locator('#report-json').textContent(); assert.ok(raw, await page.locator('#run-status').innerText()); return JSON.parse(raw); }
-    for (const story of ['connection', 'handoff', 'shape']) {
-        await page.getByRole('button', { name: ({ connection: '1. The disconnected validator', handoff: '2. The abandoned calculation', shape: '3. The drifting snapshot' })[story], exact: true }).click();
+    const storyIds = ['connection', 'handoff', 'shape', 'coverage'];
+    for (const story of storyIds) {
+        await page.getByRole('button', { name: ({ connection: '1. The disconnected validator', handoff: '2. The abandoned calculation', shape: '3. The drifting snapshot', coverage: '4. The growing project' })[story], exact: true }).click();
         for (const state of ['broken', 'repaired']) {
             if (state === 'repaired') await page.getByRole('button', { name: 'Load repair', exact: true }).click();
             const report = await runReport();
             assert.equal(report.status, state === 'broken' ? 'FAIL' : 'PASS', `${story} ${state}: ${JSON.stringify(report.contracts)}`);
             assert.deepEqual(semantic(report), semantic(native(resolve(root, `examples/${story}-${state}.json`))), `${story} ${state} browser/native semantic parity`);
+            assert.equal(report.version, 2, 'Reports use the strict version 2 boundary');
             assert.equal(await page.locator('#download-report').isDisabled(), false);
+            if (story === 'coverage') {
+                const inventory = report.contracts.find(contract => contract.kind === 'coverage').coverage;
+                assert.deepEqual(inventory.roots, ['.']); assert.deepEqual(inventory.inspected_files, ['pipeline.py']);
+                const helper = inventory.surfaces.find(surface => surface.id === 'pipeline:_county_label');
+                assert.equal(helper.classification, state === 'broken' ? 'unclassified' : 'internal');
+                assert.ok(report.contracts.filter(contract => contract.kind !== 'coverage').every(contract => contract.status === 'PASS'), 'Coverage growth fails independently of passing existing contracts');
+                const item = page.locator('.coverage-inventory li').filter({ has: page.locator('strong', { hasText: 'pipeline:_county_label' }) });
+                assert.match(await item.innerText(), state === 'broken' ? /unclassified/ : /Internal reason:/);
+            }
             if (story === 'shape' && state === 'broken') {
                 await page.locator('#report-content .finding-link').first().click();
                 assert.equal(await page.evaluate(() => document.activeElement.id), 'source-editor');
@@ -78,8 +89,42 @@ try {
             results.push(`${story} ${state}: real browser/native findings and witness parity`);
         }
     }
+    const coverageSource = await page.locator('#source-editor').inputValue(), coverageConfig = JSON.parse(await page.locator('#contract-editor').inputValue());
+    for (const mutation of [
+        { source: '\ndef _private_note():\n    return "internal"\n', surfaces: ['pipeline:_private_note'] },
+        { source: '\nif True:\n    def _conditional_note():\n        return "conditional"\n', surfaces: ['pipeline:_conditional_note'] },
+        { source: '\ndef aggregate_counties():\n    return 1\n', surfaces: ['pipeline:aggregate_counties'] },
+        { source: '\nclass DraftSnapshot(BaseModel):\n    county: str\n', surfaces: ['pipeline:DraftSnapshot'] },
+        { source: '\nclass InternalInspector:\n    def probe(self):\n        return None\n', surfaces: ['pipeline:InternalInspector', 'pipeline:InternalInspector.probe'] },
+    ]) {
+        await page.locator('#source-editor').fill(coverageSource + mutation.source); await page.locator('#contract-editor').fill(JSON.stringify(coverageConfig));
+        assert.match(await page.locator('#report-content .verdict').first().innerText(), /STALE/);
+        const unclassified = await runReport(); assert.equal(unclassified.status, 'FAIL');
+        const inventory = unclassified.contracts.find(contract => contract.kind === 'coverage').coverage;
+        for (const identity of mutation.surfaces) {
+            const surface = inventory.surfaces.find(item => item.id === identity); assert.ok(surface, `New ${identity} appears in the census`); assert.equal(surface.classification, 'unclassified');
+            const item = page.locator('.coverage-inventory li').filter({ has: page.locator('strong', { hasText: identity }) }).first();
+            await item.locator('.finding-link').click(); assert.equal(await page.evaluate(() => document.activeElement.id), 'source-editor');
+        }
+        const classified = structuredClone(coverageConfig); classified.contracts.find(contract => contract.kind === 'coverage').ledger.push(...mutation.surfaces.map(surface => ({ kind: 'internal', surface, reason: 'Deliberately internal to this editable example; it has no public integration requirement.' })));
+        await page.locator('#contract-editor').fill(JSON.stringify(classified)); assert.equal((await runReport()).status, 'PASS');
+    }
+    results.push('new private, conditional, helper, model, class, and method declarations fail coverage until explicitly classified; inventory links focus source');
+    const newHelper = 'pipeline:_audit_snapshot', backed = structuredClone(coverageConfig);
+    backed.contracts.push({ kind: 'connection', id: 'audit-connected', entry: 'pipeline:main', target: newHelper });
+    backed.contracts.find(contract => contract.kind === 'coverage').ledger.push({ kind: 'contract', surface: newHelper, contracts: ['audit-connected'] });
+    await page.locator('#source-editor').fill(coverageSource.replace('    validate_snapshot(snapshot)\n', '    validate_snapshot(snapshot)\n    _audit_snapshot(snapshot)\n') + '\ndef _audit_snapshot(snapshot: dict) -> None:\n    return None\n');
+    await page.locator('#contract-editor').fill(JSON.stringify(backed)); assert.equal((await runReport()).status, 'PASS'); results.push('a new reachable helper can be deliberately backed by a new integration contract');
+    const unsupported = structuredClone(backed); unsupported.contracts.find(contract => contract.kind === 'coverage').ledger.find(entry => entry.surface === newHelper).contracts = ['validator-connected'];
+    await page.locator('#contract-editor').fill(JSON.stringify(unsupported)); assert.equal((await runReport()).status, 'ERROR'); results.push('listing an unrelated passing contract is a configuration error');
+    await page.locator('#source-editor').fill(coverageSource); const staleLedger = structuredClone(coverageConfig); staleLedger.contracts.find(contract => contract.kind === 'coverage').ledger.push({ kind: 'internal', surface: 'pipeline:_removed', reason: 'A deliberately stale classification.' });
+    await page.locator('#contract-editor').fill(JSON.stringify(staleLedger)); const staleInventory = await runReport(); assert.equal(staleInventory.status, 'FAIL'); assert.deepEqual(staleInventory.contracts.find(contract => contract.kind === 'coverage').coverage.stale, ['pipeline:_removed']); assert.match(await page.locator('#report-content').innerText(), /Stale ledger identities/); results.push('removed declarations leave visible stale ledger identities');
+    await page.getByRole('button', { name: 'Load repair', exact: true }).click();
+    page.once('dialog', dialog => dialog.accept('helpers.py')); await page.getByRole('button', { name: 'Add file', exact: true }).click(); await page.locator('#source-editor').fill('def helper():\n    return 42\n');
+    const newFile = await runReport(); assert.equal(newFile.status, 'FAIL'); assert.ok(newFile.contracts.find(contract => contract.kind === 'coverage').coverage.surfaces.some(surface => surface.id === 'helpers:helper' && surface.classification === 'unclassified')); results.push('new files inside the declared root are censused without automatic acceptance');
+    await page.getByRole('button', { name: 'Load repair', exact: true }).click(); await runReport();
     const projectDownload = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download project', exact: true }).click();
-    const downloadedProject = JSON.parse(await readFile(await (await projectDownload).path(), 'utf8')); assert.equal(downloadedProject.version, 1); assert.equal(downloadedProject.files['pipeline.py'], await page.locator('#source-editor').inputValue());
+    const downloadedProject = JSON.parse(await readFile(await (await projectDownload).path(), 'utf8')); assert.equal(downloadedProject.version, 2); assert.equal(downloadedProject.config.version, 2); assert.equal(downloadedProject.files['pipeline.py'], await page.locator('#source-editor').inputValue());
     const reportDownload = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download report', exact: true }).click(); const downloadedReport = JSON.parse(await readFile(await (await reportDownload).path(), 'utf8')); assert.equal(downloadedReport.status, 'PASS'); results.push('project and report downloads reproduce current input and result');
     const corpusResults = await page.evaluate(async () => {
         const corpus = await (await fetch('./qualification-corpus.json')).json();
@@ -126,6 +171,18 @@ try {
         assert.equal(siteRequests.filter(url => /runtime\/|\.whl|\.wasm/.test(url)).length, 0, 'Embedded runtime waits for its activation');
         await runWorkspace(frame);
         results.push('article activation, DNT/GPC independence, exact release provenance, scoped headers, and embedded visitor-generated PASS');
+        let previous;
+        if (process.env.SENTINELS_PREVIOUS_LAB_URL) {
+            const previousURL = new URL(process.env.SENTINELS_PREVIOUS_LAB_URL, site.url());
+            assert.equal(previousURL.origin, new URL(site.url()).origin, 'Retained workspace is served by the same site');
+            assert.match(previousURL.pathname, /^\/labs\/sentinels\/_bundles\/[a-f0-9]{64}\/$/, 'Retained workspace has an immutable bundle URL');
+            const oldManifest = await (await siteContext.request.get(new URL('manifest.json', previousURL).href)).json();
+            assert.notEqual(oldManifest.wheel.sha256, publishedManifest.wheel.sha256, 'Isolation exercise uses two different released wheels');
+            const oldPage = await siteContext.newPage(); await oldPage.goto(previousURL.href); await runWorkspace(oldPage);
+            const edited = (await oldPage.locator('#source-editor').inputValue()) + '\n# Keep this edit in the older open workspace.\n'; await oldPage.locator('#source-editor').fill(edited);
+            assert.match(await oldPage.locator('#report-content .verdict').first().innerText(), /STALE/);
+            previous = { page: oldPage, manifest: oldManifest, edited, url: previousURL.href };
+        }
         const labURL = new URL('/labs/sentinels/', process.env.SENTINELS_PORTFOLIO_URL);
         const direct = await siteContext.newPage(), directRequests = []; direct.on('request', request => directRequests.push(request.url()));
         const shellResponse = await direct.goto(labURL.href); await direct.waitForLoadState('networkidle');
@@ -135,6 +192,16 @@ try {
         const directManifest = await assertReleasedWorkspace(siteContext, directIframe, direct.url()); await assertProvenance(directFrame, directManifest);
         assert.equal(directRequests.filter(url => /runtime\/|\.whl|\.wasm/.test(url)).length, 0, 'Direct-open runtime waits for activation');
         await runWorkspace(directFrame); results.push('stable direct-open shell retains immutable workspace and generates a fresh PASS');
+        if (previous) {
+            assert.equal(previous.page.url(), previous.url); assert.equal(await previous.page.locator('#source-editor').inputValue(), previous.edited); assert.match(await previous.page.locator('#report-content .verdict').first().innerText(), /STALE/);
+            await siteContext.setOffline(true);
+            try {
+                await previous.page.getByRole('button', { name: 'Run fresh analysis', exact: true }).click(); await previous.page.locator('#run:not([disabled])').waitFor({ timeout: 7000 });
+                const oldReport = JSON.parse(await previous.page.locator('#report-json').textContent()); assert.equal(oldReport.status, 'PASS'); assert.equal(oldReport.checker_version, previous.manifest.version);
+                assert.notEqual(oldReport.checker_version, directManifest.version); assert.equal(await previous.page.locator('#source-editor').inputValue(), previous.edited);
+            } finally { await siteContext.setOffline(false); }
+            results.push('retained old workspace keeps edits, stale status, and its own released checker while the stable shell opens the current release');
+        }
         for (const path of ['/labs/sentinels/v0.1.0/', '/labs/sentinels/v0.1.0', '/labs/sentinels/v0.1.0/index.html']) {
             const legacy = await siteContext.request.get(new URL(path, labURL).href, { maxRedirects: 0 });
             assert.ok([301, 302, 307, 308].includes(legacy.status()), `Legacy landing ${path} redirects`);
@@ -143,6 +210,6 @@ try {
         results.push('legacy release landing pages redirect to the stable lab URL');
         await siteContext.close();
     }
-    await mkdir(resolve(root, 'dist'), { recursive: true }); await writeFile(resolve(root, 'dist/browser-qualification.json'), JSON.stringify({ tests: results, parser_version: JSON.parse(await page.locator('#report-json').textContent()).parser_version, checker_version: JSON.parse(await page.locator('#report-json').textContent()).checker_version, pyodide: '314.0.7', browser: await browser.version(), wheel_manifest: JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8')), fixture_cases: 6 + corpusResults.length }, null, 2) + '\n');
+    await mkdir(resolve(root, 'dist'), { recursive: true }); await writeFile(resolve(root, 'dist/browser-qualification.json'), JSON.stringify({ tests: results, parser_version: JSON.parse(await page.locator('#report-json').textContent()).parser_version, checker_version: JSON.parse(await page.locator('#report-json').textContent()).checker_version, pyodide: '314.0.7', browser: await browser.version(), wheel_manifest: JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8')), fixture_cases: storyIds.length * 2 + corpusResults.length }, null, 2) + '\n');
     console.log(JSON.stringify({ passed: results.length, results }, null, 2));
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

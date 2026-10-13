@@ -3,7 +3,9 @@ import { loadManifest } from './manifest';
 interface Location { path: string; line: number; column?: number }
 interface Edge { source: string; target: string; kind: string; location?: Location; detail?: string }
 interface Finding { code: string; message: string; location?: Location | null }
-interface ContractResult { id: string; kind: string; status: string; findings: Finding[]; witness: Edge[]; unresolved: string[] }
+interface CoverageSurface { id: string; kind: 'function' | 'method' | 'class' | 'model' | 'export' | 'registration'; symbol: string; location: Location; classification: 'contract' | 'internal' | 'unclassified'; contracts: string[]; reason: string | null; unresolved: string[] }
+interface CoverageInventory { roots: string[]; inspected_files: string[]; surfaces: CoverageSurface[]; stale: string[] }
+interface ContractResult { id: string; kind: string; status: string; findings: Finding[]; witness: Edge[]; unresolved: string[]; coverage?: CoverageInventory | null }
 interface Report { status: string; scope: string[]; contracts: ContractResult[]; edges: Edge[]; assumptions: string[]; errors: Finding[]; checker_version?: string; parser_version?: string }
 const get = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const source = get<HTMLTextAreaElement>('source-editor'), config = get<HTMLTextAreaElement>('contract-editor'), fileSelect = get<HTMLSelectElement>('file-select');
@@ -48,6 +50,7 @@ function loadProject(project: ProjectBundle) {
 function chooseStory(id: string) {
     currentStory = stories.find(story => story.id === id) ?? stories[0];
     get('story-summary').textContent = currentStory.summary; get('story-question').textContent = currentStory.question;
+    get('contract-label').textContent = currentStory.id === 'coverage' ? 'Declared contracts and coverage ledger (JSON)' : 'Declared contracts (JSON)';
     for (const button of get('story-list').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.id === id));
     loadProject(currentStory.broken);
 }
@@ -71,13 +74,13 @@ function validateLimits(bundle: ProjectBundle) {
     for (const [path, content] of entries) { if (typeof content !== 'string') throw new Error(`${path}: source must be a string.`); const size = utf8.encode(content).length; if (size > 16 * 1024) throw new Error(`${path} exceeds 16 KiB.`); total += size; }
     if (total > 100 * 1024) throw new Error('The project exceeds 100 KiB total source.');
 }
-function bundle(): ProjectBundle { saveSource(); const result: ProjectBundle = { version: 1, files: clone(files), config: JSON.parse(config.value) }; validateLimits(result); return result; }
+function bundle(): ProjectBundle { saveSource(); const result: ProjectBundle = { version: 2, files: clone(files), config: JSON.parse(config.value) }; validateLimits(result); return result; }
 function download(name: string, value: unknown) { const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' })); const link = node('a'); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
 get('download-project').addEventListener('click', () => { try { download('sentinels-project.json', bundle()); } catch (error) { runStatus.textContent = String(error); } });
 reportDownload.addEventListener('click', () => { if (lastReport && !stale) download('sentinels-report.json', lastReport); });
 get<HTMLInputElement>('upload-project').addEventListener('change', async (event) => {
     const input = event.target as HTMLInputElement, file = input.files?.[0]; if (!file) return;
-    try { if (file.size > 512 * 1024) throw new Error('Project bundle exceeds 512 KiB.'); const project = JSON.parse(await file.text()); if (project.version !== 1 || !project.config || typeof project.config !== 'object' || Object.keys(project).some(key => !['version', 'files', 'config'].includes(key))) throw new Error('Use a version 1 project bundle with files and config.'); validateLimits(project); loadProject(project); runStatus.textContent = 'Project opened. Run the checker to validate its configuration.'; } catch (error) { runStatus.textContent = String(error); } finally { input.value = ''; }
+    try { if (file.size > 512 * 1024) throw new Error('Project bundle exceeds 512 KiB.'); const project = JSON.parse(await file.text()); if (project.version !== 2 || !project.config || typeof project.config !== 'object' || Object.keys(project).some(key => !['version', 'files', 'config'].includes(key))) throw new Error('Use a version 2 project bundle with files and config.'); validateLimits(project); loadProject(project); runStatus.textContent = 'Project opened. Run the checker to validate its configuration.'; } catch (error) { runStatus.textContent = String(error); } finally { input.value = ''; }
 });
 function stop(message: string) {
     clearTimeout(timeout); worker?.terminate(); worker = undefined; ready = false; busy = false; pending = ++sequence;
@@ -118,11 +121,31 @@ function renderReport(report: Report) {
         for (const finding of contract.findings ?? []) { const p = node('p', `${finding.code}: ${finding.message} `); if (finding.location) p.append(sourceLink(finding.location)); section.append(p); }
         for (const reason of contract.unresolved ?? []) section.append(node('p', `Unresolved: ${reason}`));
         if (contract.witness?.length) { const list = node('ol'); for (const edge of contract.witness) { const li = node('li', `${edge.source} → ${edge.target} (${edge.kind}) `); if (edge.location) li.append(sourceLink(edge.location)); if (edge.detail) li.append(node('span', ` — ${edge.detail}`)); list.append(li); } section.append(list); }
-        else if (contract.status === 'PASS') section.append(node('p', 'The declared shape was supported by the inspected source or artifact. See the full report for fields and scope.'));
+        else if (contract.status === 'PASS' && contract.kind === 'shape') section.append(node('p', 'The declared shape was supported by the inspected source or artifact. See the full report for fields and scope.'));
+        if (contract.coverage) renderCoverage(section, contract.coverage);
         reportContent.append(section);
     }
     if (report.assumptions?.length) { const details = node('details'); details.append(node('summary', 'Adapter assumptions and analysis boundary')); const list = node('ul'); for (const assumption of report.assumptions) list.append(node('li', assumption)); details.append(list); reportContent.append(details); }
     get('report-json').textContent = JSON.stringify(report, null, 2); renderGraph(report.edges ?? []);
+}
+function renderCoverage(section: HTMLElement, inventory: CoverageInventory) {
+    section.append(node('h4', 'Coverage inventory'), node('p', `Declared roots: ${inventory.roots.join(', ')}. Inspected files: ${inventory.inspected_files.length ? inventory.inspected_files.join(', ') : 'none'}.`));
+    const counts = { contract: 0, internal: 0, unclassified: 0 };
+    for (const surface of inventory.surfaces) counts[surface.classification]++;
+    section.append(node('p', `${counts.contract} contract-backed · ${counts.internal} explicitly internal · ${counts.unclassified} unclassified. Classifications describe the ledger; check the findings above for unsupported associations.`));
+    const list = node('ul', undefined, 'coverage-inventory'); list.setAttribute('aria-label', 'Discovered source surfaces');
+    for (const surface of inventory.surfaces) {
+        const item = node('li'); item.dataset.surface = surface.id;
+        item.append(node('strong', surface.id), ' ', node('span', surface.classification, `verdict ${surface.classification === 'unclassified' ? 'fail' : 'classification'}`));
+        const location = node('p', `${surface.kind} · ${surface.symbol} · `); location.append(sourceLink(surface.location)); item.append(location);
+        if (surface.contracts.length) item.append(node('p', `Associated contracts: ${surface.contracts.join(', ')}.`));
+        if (surface.reason !== null) item.append(node('p', `Internal reason: ${surface.reason}`));
+        if (surface.classification === 'unclassified') item.append(node('p', 'This surface has no ledger classification. Add a supported contract association or an explicit internal reason, then run fresh analysis.'));
+        for (const reason of surface.unresolved) item.append(node('p', `Unresolved: ${reason}`));
+        list.append(item);
+    }
+    section.append(list);
+    if (inventory.stale.length) { const staleList = node('ul'); for (const identity of inventory.stale) staleList.append(node('li', identity)); section.append(node('p', 'Stale ledger identities: these surfaces were not found in the inspected scope.'), staleList); }
 }
 function renderGraph(edges: Edge[]) {
     const text = get('graph-text'); text.replaceChildren();
