@@ -1616,12 +1616,13 @@ def analyze_project(root: Path | str, config: Config | dict[str, Any]) -> Analys
         configuration = validate_config(config)
         base = Path(root).resolve(strict=True)
         paths = set()
-        for source_root in sorted(set(configuration.source_roots) | set(coverage_roots(configuration))):
+        production_roots = coverage_roots(configuration)
+        for source_root in sorted(set(configuration.source_roots) | set(production_roots)):
             folder = base / source_root
             if not folder.is_dir():
                 raise SourceError(f"selected source root {source_root} is not a directory")
-            # os.walk does not follow symlink directories or enter generated
-            # environments; explicit selected artifacts are handled below.
+            # Ordinary selection skips generated environments. Explicit
+            # production roots inventory every Python file regardless of name.
             import os
             def unreadable_directory(error: OSError) -> None:
                 raise error
@@ -1629,13 +1630,15 @@ def analyze_project(root: Path | str, config: Config | dict[str, Any]) -> Analys
                 for name in dirs:
                     path = Path(directory) / name
                     relative = path.relative_to(base).as_posix()
-                    if path.is_symlink() and in_roots(relative + "/", coverage_roots(configuration)):
+                    if path.is_symlink() and in_roots(relative + "/", production_roots):
                         raise SourceError(f"coverage directory {relative} is a symbolic link; complete declaration inventory cannot be established")
-                dirs[:] = sorted(name for name in dirs if name not in (".git", ".venv", "node_modules", "__pycache__", "dist", "build", "public") and not (Path(directory) / name).is_symlink())
+                dirs[:] = sorted(name for name in dirs if not (Path(directory) / name).is_symlink() and
+                                 (name not in (".git", ".venv", "node_modules", "__pycache__", "dist", "build", "public") or
+                                  in_roots((Path(directory) / name).relative_to(base).as_posix() + "/", production_roots)))
                 for name in sorted(names):
                     path = Path(directory) / name
                     relative = path.relative_to(base).as_posix()
-                    if name.endswith(".py") and (selected(relative, configuration) or in_roots(relative, coverage_roots(configuration))):
+                    if name.endswith(".py") and (selected(relative, configuration) or in_roots(relative, production_roots)):
                         paths.add(relative)
         for contract in configuration.contracts:
             if contract.kind == "shape" and contract.mode == "artifact":

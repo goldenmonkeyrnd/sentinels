@@ -156,6 +156,28 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(report.status, 'ERROR')
         self.assertIn('symbolic link', report.errors[0].message)
 
+    def test_production_inventory_includes_technical_directory_names(self):
+        names = ['build', 'public', 'dist', 'node_modules', '__pycache__', '.venv', '.git']
+        config = configured([], rules=[], roots=['pipeline'])
+        config['excludes'] = ['pipeline/**']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = {f'pipeline/{name}/private.py' for name in names}
+            for relative in expected | {'build/unselected.py'}:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('def _hidden(): pass\n')
+            report = analyze_project(root, config)
+            inventory = report.contracts[0].coverage
+            self.assertEqual(report.status, 'FAIL')
+            self.assertEqual(set(inventory.inspected_files), expected)
+            self.assertEqual({surface.location.path for surface in inventory.surfaces}, expected)
+            self.assertTrue(all(surface.classification == 'unclassified' for surface in inventory.surfaces))
+            config['contracts'][0]['ledger'] = [internal(surface.id) for surface in inventory.surfaces]
+            repaired = analyze_project(root, config)
+            self.assertEqual(repaired.status, 'PASS')
+            self.assertNotIn('build/unselected.py', repaired.scope)
+
     def test_empty_roots_duplicate_entries_invalid_associations_and_v1_error(self):
         variants = [configured(roots=[]), configured(roots=['.', '.']), configured([internal('app:main'), internal('app:main')]), configured([internal('app:main', '  ')]), configured([association('app:main', 'absent')]), configured([association('app:main', 'production')]), configured(roots=['../escape']), configured(roots=['./'])]
         for config in variants:
